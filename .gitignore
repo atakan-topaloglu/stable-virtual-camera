@@ -1,4 +1,9 @@
 .envrc
+.venv/
+.gradio/
+assets/
+work_dirs/
+work_dirs
 
 # Byte-compiled files
 __pycache__/
