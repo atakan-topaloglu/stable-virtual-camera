@@ -12,7 +12,7 @@ from einops import rearrange, repeat
 from tqdm import tqdm
 
 sys.path.insert(0, "/admin/home-hangg/projects/stable-research/")
-from scripts.threeD_diffusion.run_eval import (
+from scripts.threeD_diffusion.run_eval_gr_hoster import (
     CovariancePredictionGuider,
     LinearPredictionGuider,
     LinearTrianglePredictionGuider,

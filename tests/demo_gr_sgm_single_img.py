@@ -35,8 +35,10 @@ from scripts.threeD_diffusion.run_eval_gr_hoster import (
     get_arc_horizontal_w2cs,
     get_default_intrinsics,
     get_k_from_dict,
+    get_lemniscate_w2cs,
     get_panning_w2cs,
     get_plucker_coordinates,
+    get_roll_w2cs,
     get_unique_embedder_keys_from_conditioner,
     init_embedder_options_no_st,
     init_model,
@@ -107,6 +109,7 @@ class ScenaData(object):
     input_indices: list[int]
     anchor_indices: list[int]
     target_indices: list[int]
+    camera_scale: float = 2.0
 
 
 class ScenaRenderer(object):
@@ -130,6 +133,7 @@ class ScenaRenderer(object):
         curr_input_camera_indices,
         curr_depths,
         all_c2ws,
+        camera_scale=2.0,
         as_shuffled=True,
     ):
         assert sorted(curr_input_camera_indices) == sorted(
@@ -154,7 +158,6 @@ class ScenaRenderer(object):
         value_dict["cond_frames"] = curr_imgs + 0.0 * torch.randn_like(curr_imgs)
         value_dict["cond_aug"] = 0.0
 
-        camera_scale = 2.0
         c2w = to_hom_pose(curr_c2ws.float())
         w2c = torch.linalg.inv(c2w)
 
@@ -175,7 +178,9 @@ class ScenaRenderer(object):
         camera_dists = c2w[:, :3, 3].clone()
         translation_scaling_factor = (
             camera_scale
-            if torch.isclose(torch.norm(camera_dists[0]), torch.zeros(1)).any()
+            if torch.isclose(
+                torch.norm(camera_dists[0]), torch.zeros(1), atol=1e-6
+            ).any()
             else (camera_scale / torch.norm(camera_dists[0]))
         )
         w2c[:, :3, 3] *= translation_scaling_factor
@@ -532,7 +537,22 @@ class ScenaRenderer(object):
 
     def get_traj_fn(
         self,
-        traj: Literal["360", "spiral", "dollyzoomin", "dollyzoomout"],
+        traj: Literal[
+            "360",
+            "lemniscate",
+            "spiral",
+            "dolly zoom-in",
+            "dolly zoom-out",
+            "zoom-in",
+            "zoom-out",
+            "pan-forward",
+            "pan-backward",
+            "pan-up",
+            "pan-down",
+            "pan-left",
+            "pan-right",
+            "roll",
+        ],
     ):
         if traj == "360":
 
@@ -542,23 +562,62 @@ class ScenaRenderer(object):
                 num_frames: int,
                 endpoint: bool = False,
             ):
-                return torch.linalg.inv(
-                    get_arc_horizontal_w2cs(
-                        torch.linalg.inv(ref_c2w),
-                        torch.tensor([0, 0, 10]),
-                        None,
-                        num_frames,
-                        endpoint=True,
+                return (
+                    torch.linalg.inv(
+                        get_arc_horizontal_w2cs(
+                            torch.linalg.inv(ref_c2w),
+                            torch.tensor([0, 0, 10]),
+                            None,
+                            num_frames,
+                            endpoint=True,
+                        )
                     )
-                ) if endpoint else torch.linalg.inv(
-                    get_arc_horizontal_w2cs(
-                        torch.linalg.inv(ref_c2w),
-                        torch.tensor([0, 0, 10]),
-                        None,
-                        num_frames + 1,
-                        endpoint=False,
+                    if endpoint
+                    else torch.linalg.inv(
+                        get_arc_horizontal_w2cs(
+                            torch.linalg.inv(ref_c2w),
+                            torch.tensor([0, 0, 10]),
+                            None,
+                            num_frames + 1,
+                            endpoint=False,
+                        )
+                    )[1:],
+                    repeat(ref_K, "i j -> n i j", n=num_frames),
+                    2.0,
+                )
+        elif traj == "lemniscate":
+
+            def traj_fn(
+                ref_c2w: torch.Tensor,
+                ref_K: torch.Tensor,
+                num_frames: int,
+                endpoint: bool = False,
+            ):
+                return (
+                    torch.linalg.inv(
+                        get_lemniscate_w2cs(
+                            torch.linalg.inv(ref_c2w),
+                            torch.tensor([0, 0, 10]),
+                            None,
+                            num_frames,
+                            degree=60.0,
+                            endpoint=True,
+                        )
                     )
-                )[1:], repeat(ref_K, "i j -> n i j", n=num_frames)
+                    if endpoint
+                    else torch.linalg.inv(
+                        get_lemniscate_w2cs(
+                            torch.linalg.inv(ref_c2w),
+                            torch.tensor([0, 0, 10]),
+                            None,
+                            num_frames + 1,
+                            degree=60.0,
+                            endpoint=False,
+                        )
+                    )[1:],
+                    repeat(ref_K, "i j -> n i j", n=num_frames),
+                    2.0,
+                )
         elif traj == "spiral":
 
             def traj_fn(
@@ -574,6 +633,7 @@ class ScenaRenderer(object):
                         n_frames=num_frames,
                         n_rots=2,
                         zrate=0.5,
+                        radii=[1.0, 1.0, 0.5],
                         endpoint=True,
                     )
                     if endpoint
@@ -583,16 +643,22 @@ class ScenaRenderer(object):
                         n_frames=num_frames + 1,
                         n_rots=2,
                         zrate=0.5,
+                        radii=[1.0, 1.0, 0.5],
                         endpoint=False,
                     )[1:]
                 )
                 c2ws = c2ws @ np.diagflat([1, -1, -1, 1])
                 c2ws = to_hom_pose(torch.as_tensor(c2ws).float())
-                return c2ws, repeat(ref_K, "i j -> n i j", n=num_frames)
-        elif traj in ["dollyzoomin", "dollyzoomout"]:
-            direction = "backward" if traj == "dollyzoomin" else "forward"
-            fov_rad_start = DEFAULT_FOV_RAD
-            fov_rad_end = (0.5 if traj == "dollyzoomin" else 2.0) * DEFAULT_FOV_RAD
+                # The original spiral path does not pass through the reference.
+                # So we do the relative here.
+                c2ws = ref_c2w @ torch.linalg.inv(c2ws[:1]) @ c2ws
+                return c2ws, repeat(ref_K, "i j -> n i j", n=num_frames), 2.0
+        elif traj in [
+            "dolly zoom-in",
+            "dolly zoom-out",
+            "zoom-in",
+            "zoom-out",
+        ]:
 
             def traj_fn(
                 ref_c2w: torch.Tensor,
@@ -600,39 +666,131 @@ class ScenaRenderer(object):
                 num_frames: int,
                 endpoint: bool = False,
             ):
+                if traj.startswith("dolly"):
+                    direction = "backward" if traj == "dolly zoom-in" else "forward"
+                    c2ws = (
+                        torch.linalg.inv(
+                            get_panning_w2cs(
+                                torch.linalg.inv(ref_c2w),
+                                torch.tensor([0, 0, 100]),
+                                None,
+                                num_frames,
+                                endpoint=True,
+                                direction=direction,
+                            )
+                        )
+                        if endpoint
+                        else torch.linalg.inv(
+                            get_panning_w2cs(
+                                torch.linalg.inv(ref_c2w),
+                                torch.tensor([0, 0, 100]),
+                                None,
+                                num_frames + 1,
+                                endpoint=False,
+                                direction=direction,
+                            )
+                        )[1:]
+                    )
+                else:
+                    c2ws = repeat(ref_c2w, "i j -> n i j", n=num_frames)
                 # TODO(hangg): Here always assume DEFAULT_FOV_RAD, need to
                 # improve to support general case.
-                return torch.linalg.inv(
-                    get_panning_w2cs(
-                        torch.linalg.inv(ref_c2w),
-                        torch.tensor([0, 0, 100]),
-                        None,
-                        num_frames,
-                        endpoint=True,
-                        direction=direction,
-                    )
-                ) if endpoint else torch.linalg.inv(
-                    get_panning_w2cs(
-                        torch.linalg.inv(ref_c2w),
-                        torch.tensor([0, 0, 100]),
-                        None,
-                        num_frames + 1,
-                        endpoint=False,
-                        direction=direction,
-                    )
-                )[1:], torch.cat(
-                    [
-                        get_default_intrinsics(
-                            float(fov_rad_start + ratio * (fov_rad_end - fov_rad_start))
+                fov_rad_start = DEFAULT_FOV_RAD
+                fov_rad_end = (
+                    0.28 if traj.endswith("zoom-in") else 1.5
+                ) * DEFAULT_FOV_RAD
+                return (
+                    c2ws,
+                    torch.cat(
+                        [
+                            get_default_intrinsics(
+                                float(
+                                    fov_rad_start
+                                    + ratio * (fov_rad_end - fov_rad_start)
+                                )
+                            )
+                            for ratio in torch.linspace(
+                                0,
+                                1,
+                                num_frames + 1 - endpoint,
+                            )
+                        ],
+                        dim=0,
+                    )[1 - endpoint :],
+                    10.0,
+                )
+        elif traj in [
+            "pan-forward",
+            "pan-backward",
+            "pan-up",
+            "pan-down",
+            "pan-left",
+            "pan-right",
+        ]:
+
+            def traj_fn(
+                ref_c2w: torch.Tensor,
+                ref_K: torch.Tensor,
+                num_frames: int,
+                endpoint: bool = False,
+            ):
+                return (
+                    torch.linalg.inv(
+                        get_panning_w2cs(
+                            torch.eye(4),
+                            torch.tensor([0, 0, 100]),
+                            None,
+                            num_frames,
+                            endpoint=True,
+                            direction=traj.removeprefix("pan-"),
                         )
-                        for ratio in torch.linspace(
-                            0,
-                            1,
-                            num_frames + 1 - endpoint,
+                    )
+                    if endpoint
+                    else torch.linalg.inv(
+                        get_panning_w2cs(
+                            torch.eye(4),
+                            torch.tensor([0, 0, 100]),
+                            None,
+                            num_frames + 1,
+                            endpoint=True,
+                            direction=traj.removeprefix("pan-"),
                         )
-                    ],
-                    dim=0,
-                )[1 - endpoint :]
+                    )[1:],
+                    repeat(ref_K, "i j -> n i j", n=num_frames),
+                    10.0,
+                )
+        elif traj == "roll":
+
+            def traj_fn(
+                ref_c2w: torch.Tensor,
+                ref_K: torch.Tensor,
+                num_frames: int,
+                endpoint: bool = False,
+            ):
+                return (
+                    torch.linalg.inv(
+                        get_roll_w2cs(
+                            torch.eye(4),
+                            torch.tensor([0, 0, 10]),
+                            None,
+                            num_frames,
+                            endpoint=True,
+                        )
+                    )
+                    if endpoint
+                    else torch.linalg.inv(
+                        get_roll_w2cs(
+                            torch.eye(4),
+                            torch.tensor([0, 0, 10]),
+                            None,
+                            num_frames + 1,
+                            endpoint=True,
+                        )
+                    )[1:],
+                    repeat(ref_K, "i j -> n i j", n=num_frames),
+                    2.0,
+                )
+
         else:
             raise ValueError(f"Unsupported trajectory: {traj}")
 
@@ -641,7 +799,22 @@ class ScenaRenderer(object):
     def prepare(
         self,
         img: np.ndarray,
-        traj: Literal["360", "spiral", "dollyzoomin", "dollyzoomout"],
+        traj: Literal[
+            "360",
+            "lemniscate",
+            "spiral",
+            "dolly zoom-in",
+            "dolly zoom-out",
+            "zoom-in",
+            "zoom-out",
+            "pan-forward",
+            "pan-backward",
+            "pan-up",
+            "pan-down",
+            "pan-left",
+            "pan-right",
+            "roll",
+        ],
         num_targets: int = 80,
     ):
         traj_fn = self.get_traj_fn(traj)
@@ -653,7 +826,9 @@ class ScenaRenderer(object):
         input_imgs = transform_img_and_K(input_imgs, None, *self.cfg.target_wh)[0]
         input_Ks = repeat(get_default_intrinsics(), "1 i j -> n i j", n=num_inputs)
         input_c2ws = repeat(torch.eye(4), "i j -> n i j", n=num_inputs)
-        target_c2ws, target_Ks = traj_fn(input_c2ws[0], input_Ks[0], num_targets)
+        target_c2ws, target_Ks, camera_scale = traj_fn(
+            input_c2ws[0], input_Ks[0], num_targets
+        )
         if self.cfg.chunk_strategy.startswith("interp"):
             num_anchors = max(
                 np.ceil(
@@ -673,7 +848,7 @@ class ScenaRenderer(object):
         else:
             num_anchors = max(self.cfg.context_window - num_inputs, 0)
             include_start_end = False
-        anchor_c2ws, anchor_Ks = traj_fn(
+        anchor_c2ws, anchor_Ks, _ = traj_fn(
             input_c2ws[0], input_Ks[0], num_anchors, endpoint=include_start_end
         )
 
@@ -701,13 +876,29 @@ class ScenaRenderer(object):
             input_indices,
             anchor_indices,
             target_indices,
+            camera_scale,
         )
 
     @torch.inference_mode()
     def render_video(
         self,
         img: np.ndarray,
-        traj: Literal["360"],
+        traj: Literal[
+            "360",
+            "lemniscate",
+            "spiral",
+            "dolly zoom-in",
+            "dolly zoom-out",
+            "zoom-in",
+            "zoom-out",
+            "pan-forward",
+            "pan-backward",
+            "pan-up",
+            "pan-down",
+            "pan-left",
+            "pan-right",
+            "roll",
+        ],
         num_targets: int,
         seed: int = 23,
     ):
@@ -855,6 +1046,7 @@ class ScenaRenderer(object):
                         )
                     )  # "interp" not in chunk_strategy_first_pass
                 ),
+                camera_scale=data.camera_scale,
             )
 
             samples = self.do_sample(
@@ -1019,6 +1211,7 @@ class ScenaRenderer(object):
                         )
                     )  # "interp" not in chunk_strategy
                 ),
+                camera_scale=data.camera_scale,
             )
             samples = self.do_sample(
                 samplers[1] if len(samplers) > 1 else samplers[0],
@@ -1081,8 +1274,22 @@ def main(cfg: ScenaRendererConfig):
                     label="Examples",
                 )
                 traj_handle = gr.Dropdown(
-                    # choices=["360", "spiral", "dollyzoomin", "dollyzoomout"],
-                    choices=["360"],
+                    choices=[
+                        "360",
+                        "lemniscate",
+                        "spiral",
+                        "dolly zoom-in",
+                        "dolly zoom-out",
+                        "zoom-in",
+                        "zoom-out",
+                        "pan-forward",
+                        "pan-backward",
+                        "pan-up",
+                        "pan-down",
+                        "pan-left",
+                        "pan-right",
+                        "roll",
+                    ],
                     label="Preset trajectory",
                 )
                 num_targets_handle = gr.Slider(30, 150, 80, label="#Frames")

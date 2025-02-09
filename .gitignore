@@ -1,5 +1,6 @@
 .envrc
 .venv/
+*.pth
 .gradio/
 assets/
 work_dirs/
