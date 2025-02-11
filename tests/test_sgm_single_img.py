@@ -454,7 +454,6 @@ def do_sample(
                     T=T,
                     additional_batch_uc_fields=additional_batch_uc_fields,
                 )
-
                 c, uc = model.conditioner.get_unconditional_conditioning(
                     batch,
                     batch_uc=batch_uc,
@@ -480,12 +479,12 @@ def do_sample(
                             sampler_.guider,
                             (
                                 VanillaCFG,
-                                LinearPredictionGuider,
-                                LinearTrianglePredictionGuider,
-                                TrapezoidPredictionGuider,
+                                LinearPredictionGuider,  # Not important
+                                LinearTrianglePredictionGuider,  # Not important
+                                TrapezoidPredictionGuider,  # Not important
                                 MultiTrianglePredictionGuider,
                                 MultiPredictionGuider,
-                                CovariancePredictionGuider,
+                                CovariancePredictionGuider,  # Not important
                             ),
                         ):
                             additional_model_inputs[k] = torch.full(

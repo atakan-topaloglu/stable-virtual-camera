@@ -56,7 +56,9 @@ class Attention(nn.Module):
             nn.Linear(inner_dim, query_dim), nn.Dropout(dropout)
         )
 
-    def forward(self, x: torch.Tensor, context: torch.Tensor | None = None):
+    def forward(
+        self, x: torch.Tensor, context: torch.Tensor | None = None
+    ) -> torch.Tensor:
         q = self.to_q(x)
         context = context if context is not None else x
         k = self.to_k(context)
@@ -91,8 +93,6 @@ class TransformerBlock(nn.Module):
         dropout: float = 0.0,
     ):
         super().__init__()
-        self.context_dim = context_dim
-
         self.attn1 = Attention(
             query_dim=dim,
             context_dim=None,
@@ -112,42 +112,11 @@ class TransformerBlock(nn.Module):
         self.norm2 = nn.LayerNorm(dim)
         self.norm3 = nn.LayerNorm(dim)
 
-    def forward(
-        self, x: torch.Tensor, context: torch.Tensor | None = None
-    ) -> torch.Tensor:
-        if self.context_dim:
-            assert context is not None and context.shape[-1] == self.context_dim
+    def forward(self, x: torch.Tensor, context: torch.Tensor) -> torch.Tensor:
         x = self.attn1(self.norm1(x)) + x
         x = self.attn2(self.norm2(x), context=context) + x
         x = self.ff(self.norm3(x)) + x
         return x
-
-
-class AttentionTimeMix(Attention):
-    def forward(self, x: torch.Tensor, context: torch.Tensor | None = None):
-        # TODO(hangg): Identical?
-        q = self.to_q(x)
-        context = context if context is not None else x
-        k = self.to_k(context)
-        v = self.to_v(context)
-        b, _, _ = q.shape
-        q, k, v = map(
-            lambda t: t.unsqueeze(3)
-            .reshape(b, t.shape[1], self.heads, self.dim_head)
-            .permute(0, 2, 1, 3)
-            .reshape(b * self.heads, t.shape[1], self.dim_head)
-            .contiguous(),
-            (q, k, v),
-        )
-        out = xformers.ops.memory_efficient_attention(q, k, v)
-        out = (
-            out.unsqueeze(0)
-            .reshape(b, self.heads, out.shape[1], self.dim_head)
-            .permute(0, 2, 1, 3)
-            .reshape(b, out.shape[1], self.heads * self.dim_head)
-        )
-        out = self.to_out(out)
-        return out
 
 
 class TransformerBlockTimeMix(nn.Module):
@@ -156,19 +125,14 @@ class TransformerBlockTimeMix(nn.Module):
         dim: int,
         n_heads: int,
         d_head: int,
-        context_dim: int | None = None,
+        context_dim: int,
         dropout: float = 0.0,
-        inner_dim: int | None = None,
-        is_res: bool = True,
     ):
         super().__init__()
-        inner_dim = inner_dim or dim
-        assert int(n_heads * d_head) == inner_dim
-        self.is_res = (inner_dim == dim) and is_res
-
+        inner_dim = n_heads * d_head
         self.norm_in = nn.LayerNorm(dim)
         self.ff_in = FeedForward(dim, dim_out=inner_dim, dropout=dropout)
-        self.attn1 = AttentionTimeMix(
+        self.attn1 = Attention(
             query_dim=inner_dim,
             context_dim=None,
             heads=n_heads,
@@ -176,7 +140,7 @@ class TransformerBlockTimeMix(nn.Module):
             dropout=dropout,
         )
         self.ff = FeedForward(inner_dim, dim_out=dim, dropout=dropout)
-        self.attn2 = AttentionTimeMix(
+        self.attn2 = Attention(
             query_dim=inner_dim,
             context_dim=context_dim,
             heads=n_heads,
@@ -188,17 +152,14 @@ class TransformerBlockTimeMix(nn.Module):
         self.norm3 = nn.LayerNorm(inner_dim)
 
     def forward(
-        self, x: torch.Tensor, context: torch.Tensor | None, num_frames: int
+        self, x: torch.Tensor, context: torch.Tensor, num_frames: int
     ) -> torch.Tensor:
         _, s, _ = x.shape
         x = rearrange(x, "(b t) s c -> (b s) t c", t=num_frames)
         x = self.ff_in(self.norm_in(x)) + x
         x = self.attn1(self.norm1(x), context=None) + x
         x = self.attn2(self.norm2(x), context=context) + x
-        x_skip = x
         x = self.ff(self.norm3(x))
-        if self.is_res:
-            x += x_skip
         x = rearrange(x, "(b s) t c -> (b t) s c", s=s)
         return x
 
@@ -255,8 +216,6 @@ class MultiviewTransformer(nn.Module):
                     d_head,
                     context_dim=context_dim,
                     dropout=dropout,
-                    inner_dim=inner_dim,
-                    is_res=False,
                 )
                 for _ in range(depth)
             ]

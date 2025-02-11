@@ -13,7 +13,7 @@ def timestep_embedding(
     dim: int,
     max_period: int = 10000,
     repeat_only: bool = False,
-):
+    )-> torch.Tensor:
     if not repeat_only:
         half = dim // 2
         freqs = torch.exp(
@@ -39,7 +39,7 @@ class Upsample(nn.Module):
         self.out_channels = out_channels or channels
         self.conv = nn.Conv2d(self.channels, self.out_channels, 3, 1, 1)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         assert x.shape[1] == self.channels
         x = F.interpolate(x, scale_factor=2, mode="nearest")
         x = self.conv(x)
@@ -53,7 +53,7 @@ class Downsample(nn.Module):
         self.out_channels = out_channels or channels
         self.op = nn.Conv2d(self.channels, self.out_channels, 3, 2, 1)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         assert x.shape[1] == self.channels
         return self.op(x)
 
