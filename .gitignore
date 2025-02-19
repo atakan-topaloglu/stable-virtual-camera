@@ -2,7 +2,7 @@
 .venv/
 *.pth
 .gradio/
-assets/
+static/
 work_dirs/
 work_dirs
 
