@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import colorsys
 import dataclasses
 import threading
@@ -11,7 +9,15 @@ import scipy
 import splines
 import splines.quaternion
 import viser
-import viser.transforms as tf
+import viser.transforms as vt
+
+from stableviews.geometry import (
+    generate_spiral_path,
+    get_arc_horizontal_w2cs,
+    get_lemniscate_w2cs,
+    get_panning_w2cs,
+    get_roll_w2cs,
+)
 
 
 @dataclasses.dataclass
@@ -25,7 +31,7 @@ class Keyframe(object):
     override_transition_sec: float | None
 
     @staticmethod
-    def from_camera(camera: viser.CameraHandle, aspect: float) -> Keyframe:
+    def from_camera(camera: viser.CameraHandle, aspect: float) -> "Keyframe":
         return Keyframe(
             camera.position,
             camera.wxyz,
@@ -36,8 +42,20 @@ class Keyframe(object):
             override_transition_sec=None,
         )
 
+    @staticmethod
+    def from_se3(se3: vt.SE3, fov: float, aspect: float) -> "Keyframe":
+        return Keyframe(
+            se3.translation(),
+            se3.rotation().wxyz,
+            override_fov_enabled=False,
+            override_fov_rad=fov,
+            aspect=aspect,
+            override_transition_enabled=False,
+            override_transition_sec=None,
+        )
 
-class CameraPath(object):
+
+class CameraTrajectory(object):
     def __init__(
         self,
         server: viser.ViserServer,
@@ -64,7 +82,7 @@ class CameraPath(object):
         # These parameters should be overridden externally.
         self.loop: bool = False
         self.framerate: float = 30.0
-        self.tension: float = 0.5  # Tension / alpha term.
+        self.tension: float = 0.0  # Tension / alpha term.
         self.default_fov: float = 0.0
         self.default_transition_sec: float = 0.0
         self.show_spline: bool = True
@@ -181,22 +199,22 @@ class CameraPath(object):
             def _(event: viser.GuiEvent) -> None:
                 assert event.client is not None
                 client = event.client
-                T_world_current = tf.SE3.from_rotation_and_translation(
-                    tf.SO3(client.camera.wxyz), client.camera.position
+                T_world_current = vt.SE3.from_rotation_and_translation(
+                    vt.SO3(client.camera.wxyz), client.camera.position
                 )
-                T_world_target = tf.SE3.from_rotation_and_translation(
-                    tf.SO3(keyframe.wxyz), keyframe.position
-                ) @ tf.SE3.from_translation(np.array([0.0, 0.0, -0.5]))
+                T_world_target = vt.SE3.from_rotation_and_translation(
+                    vt.SO3(keyframe.wxyz), keyframe.position
+                ) @ vt.SE3.from_translation(np.array([0.0, 0.0, -0.5]))
 
                 T_current_target = T_world_current.inverse() @ T_world_target
 
                 for j in range(10):
-                    T_world_set = T_world_current @ tf.SE3.exp(
+                    T_world_set = T_world_current @ vt.SE3.exp(
                         T_current_target.log() * j / 9.0
                     )
 
-                    # Important bit: we atomically set both the orientation and the position
-                    # of the camera.
+                    # Important bit: we atomically set both the orientation and
+                    # the position of the camera.
                     with client.atomic():
                         client.camera.wxyz = T_world_set.rotation().wxyz
                         client.camera.position = T_world_set.translation()
@@ -226,7 +244,7 @@ class CameraPath(object):
             frame[1].remove()
         self._keyframes.clear()
         self.update_spline()
-        print("camera path reset")
+        print("camera traj reset")
 
     def spline_t_from_t_sec(self, time: np.ndarray) -> np.ndarray:
         """From a time value in seconds, compute a t value for our geometric
@@ -265,7 +283,7 @@ class CameraPath(object):
 
     def interpolate_pose_and_fov_rad(
         self, normalized_t: float
-    ) -> tuple[tf.SE3, float] | None:
+    ) -> tuple[vt.SE3, float] | None:
         if len(self._keyframes) < 2:
             return None
 
@@ -293,8 +311,8 @@ class CameraPath(object):
         quat = self._orientation_spline.evaluate(spline_t)
         assert isinstance(quat, splines.quaternion.UnitQuaternion)
         return (
-            tf.SE3.from_rotation_and_translation(
-                tf.SO3(np.array([quat.scalar, *quat.vector])),
+            vt.SE3.from_rotation_and_translation(
+                vt.SO3(np.array([quat.scalar, *quat.vector])),
                 self._position_spline.evaluate(spline_t),
             ),
             float(self._fov_spline.evaluate(spline_t)),
@@ -493,7 +511,7 @@ class GuiState:
     preview_render: bool
     preview_fov: float
     preview_aspect: float
-    camera_path_list: list | None
+    camera_traj_list: list | None
     active_input_index: int
 
 
@@ -501,15 +519,197 @@ def define_gui(
     server: viser.ViserServer,
     init_fov: float = 75.0,
     img_wh: tuple[int, int] = (576, 576),
+    input_camera_node_list: list[viser.FrameHandle] | None = None,
+    preset_paths: dict[str, np.ndarray] | None = None,
     **kwargs,
 ) -> GuiState:
     gui_state = GuiState(
         preview_render=False,
         preview_fov=0.0,
         preview_aspect=1.0,
-        camera_path_list=None,
+        camera_traj_list=None,
         active_input_index=0,
     )
+
+    with server.gui.add_folder("Preset camera trajectories", order=99):
+        preset_traj_dropdown = server.gui.add_dropdown(
+            "Options",
+            [
+                "orbit",
+                "spiral",
+                "lemniscate",
+                "roll",
+                "dolly zoom-in",
+                "dolly zoom-out",
+                # Viewport will cut off the dropdown if too long.
+                # "zoom-in",
+                # "zoom-out",
+                # "pan-forward",
+                # "pan-backward",
+                # "pan-up",
+                # "pan-down",
+                # "pan-left",
+                # "pan-right",
+            ],
+            initial_value="orbit",
+            hint="Select a preset camera trajectory.",
+        )
+        preset_duration_num = server.gui.add_number(
+            "Duration (sec)",
+            min=1.0,
+            max=60.0,
+            step=0.5,
+            initial_value=2.0,
+        )
+        preset_submit_button = server.gui.add_button(
+            "Submit",
+            icon=viser.Icon.PICK,
+            hint="Add a new keyframe at the current pose.",
+        )
+
+        @preset_submit_button.on_click
+        def _(event: viser.GuiEvent) -> None:
+            import torch
+
+            camera_traj.reset()
+            gui_state.camera_traj_list = None
+
+            option = preset_traj_dropdown.value
+            duration = preset_duration_num.value
+            fps = framerate_number.value
+            num_frames = int(duration * fps)
+            transition_sec = duration / num_frames
+            transition_sec_number.value = transition_sec
+            assert event.client_id is not None
+            transition_sec_number.disabled = True
+            loop_checkbox.disabled = True
+            add_keyframe_button.disabled = True
+
+            camera = server.get_clients()[event.client_id].camera
+            start_w2c = torch.linalg.inv(
+                torch.as_tensor(
+                    vt.SE3.from_rotation_and_translation(
+                        vt.SO3(camera.wxyz), camera.position
+                    ).as_matrix(),
+                    dtype=torch.float32,
+                )
+            )
+            look_at = torch.as_tensor(camera.look_at, dtype=torch.float32)
+            up_direction = torch.as_tensor(camera.up_direction, dtype=torch.float32)
+
+            poses = fovs = None
+            if option == "orbit":
+                poses = torch.linalg.inv(
+                    get_arc_horizontal_w2cs(
+                        start_w2c,
+                        look_at,
+                        up_direction,
+                        num_frames=num_frames,
+                        endpoint=False,
+                    )
+                ).numpy()
+                fovs = np.full((num_frames,), camera.fov)
+            elif option == "spiral":
+                poses = generate_spiral_path(
+                    torch.linalg.inv(start_w2c)[None].numpy()
+                    @ np.diagflat([1, -1, -1, 1]),
+                    np.array([1, 5]),
+                    n_frames=num_frames,
+                    n_rots=2,
+                    zrate=0.5,
+                    radii=[0.5, 0.5, 0.2],
+                    endpoint=False,
+                ) @ np.diagflat([1, -1, -1, 1])
+                fovs = np.full((num_frames,), camera.fov)
+            elif option == "lemniscate":
+                poses = torch.linalg.inv(
+                    get_lemniscate_w2cs(
+                        start_w2c,
+                        look_at,
+                        up_direction,
+                        num_frames,
+                        degree=60.0,
+                        endpoint=False,
+                    )
+                ).numpy()
+                fovs = np.full((num_frames,), camera.fov)
+            elif option == "roll":
+                poses = torch.linalg.inv(
+                    get_roll_w2cs(
+                        start_w2c,
+                        look_at,
+                        None,
+                        num_frames,
+                        degree=360.0,
+                        endpoint=False,
+                    )
+                ).numpy()
+                fovs = np.full((num_frames,), camera.fov)
+            elif option in [
+                "dolly zoom-in",
+                "dolly zoom-out",
+                "zoom-in",
+                "zoom-out",
+            ]:
+                if option.startswith("dolly"):
+                    direction = "backward" if option == "dolly zoom-in" else "forward"
+                    poses = torch.linalg.inv(
+                        get_panning_w2cs(
+                            start_w2c,
+                            look_at,
+                            up_direction,
+                            num_frames,
+                            endpoint=True,
+                            direction=direction,
+                        )
+                    ).numpy()
+                else:
+                    poses = (
+                        torch.linalg.inv(start_w2c)[None]
+                        .repeat(num_frames, 1, 1)
+                        .numpy()
+                    )
+                # TODO(hangg): Here always assume DEFAULT_FOV_RAD, need to
+                # improve to support general case.
+                fov_rad_start = camera.fov
+                fov_rad_end = (0.28 if option.endswith("zoom-in") else 1.5) * camera.fov
+                fovs = (
+                    np.linspace(0, 1, num_frames) * (fov_rad_end - fov_rad_start)
+                    + fov_rad_start
+                )
+            elif option in [
+                "pan-forward",
+                "pan-backward",
+                "pan-up",
+                "pan-down",
+                "pan-left",
+                "pan-right",
+            ]:
+                poses = torch.linalg.inv(
+                    get_panning_w2cs(
+                        start_w2c,
+                        look_at,
+                        up_direction,
+                        num_frames,
+                        endpoint=True,
+                        direction=option.removeprefix("pan-"),
+                    )
+                ).numpy()
+                fovs = np.full((num_frames,), camera.fov)
+            else:
+                raise ValueError(f"Unknown preset option {option}.")
+            assert poses is not None and fovs is not None
+            for pose, fov in zip(poses, fovs):
+                camera_traj.add_camera(
+                    Keyframe.from_se3(
+                        vt.SE3.from_matrix(pose),
+                        fov=fov,
+                        aspect=img_wh[0] / img_wh[1],
+                    )
+                )
+
+            duration_number.value = camera_traj.compute_duration()
+            camera_traj.update_spline()
 
     with server.gui.add_folder("Advanced", expand_by_default=False, order=100):
         transition_sec_number = server.gui.add_number(
@@ -551,45 +751,45 @@ def define_gui(
         fov_radians = fov_degree_slider.value / 180.0 * np.pi
         for client in server.get_clients().values():
             client.camera.fov = fov_radians
-        camera_path.default_fov = fov_radians
+        camera_traj.default_fov = fov_radians
 
         # Updating the aspect ratio will also re-render the camera frustums.
         # Could rethink this.
-        camera_path.update_aspect(img_wh[0] / img_wh[1])
+        camera_traj.update_aspect(img_wh[0] / img_wh[1])
         compute_and_update_preview_camera_state()
 
     scene_node_prefix = "/render_assets"
     base_scene_node = server.scene.add_frame(scene_node_prefix, show_axes=False)
-    add_button = server.gui.add_button(
+    add_keyframe_button = server.gui.add_button(
         "Add keyframe",
         icon=viser.Icon.PLUS,
         hint="Add a new keyframe at the current pose.",
     )
 
-    @add_button.on_click
+    @add_keyframe_button.on_click
     def _(event: viser.GuiEvent) -> None:
         assert event.client_id is not None
         camera = server.get_clients()[event.client_id].camera
-        pose = tf.SE3.from_rotation_and_translation(
-            tf.SO3(camera.wxyz), camera.position
+        pose = vt.SE3.from_rotation_and_translation(
+            vt.SO3(camera.wxyz), camera.position
         )
         print(f"client {event.client_id} at {camera.position} {camera.wxyz}")
         print(f"camera pose {pose.as_matrix()}")
 
-        # Add this camera to the path.
-        camera_path.add_camera(
+        # Add this camera to the trajectory.
+        camera_traj.add_camera(
             Keyframe.from_camera(
                 camera,
                 aspect=img_wh[0] / img_wh[1],
             ),
         )
-        duration_number.value = camera_path.compute_duration()
-        camera_path.update_spline()
+        duration_number.value = camera_traj.compute_duration()
+        camera_traj.update_spline()
 
     clear_keyframes_button = server.gui.add_button(
         "Clear keyframes",
         icon=viser.Icon.TRASH,
-        hint="Remove all keyframes from the render path.",
+        hint="Remove all keyframes from the render trajectory.",
     )
 
     @clear_keyframes_button.on_click
@@ -605,20 +805,17 @@ def define_gui(
 
             @confirm_button.on_click
             def _(_) -> None:
-                camera_path.reset()
+                camera_traj.reset()
                 modal.close()
 
-                duration_number.value = camera_path.compute_duration()
+                duration_number.value = camera_traj.compute_duration()
+                add_keyframe_button.disabled = False
+                transition_sec_number.disabled = False
+                transition_sec_number.value = 1.5
+                loop_checkbox.disabled = False
 
                 nonlocal gui_state
-                gui_state.camera_path_list = None
-
-                # Clear move handles.
-                if len(transform_controls) > 0:
-                    for t in transform_controls:
-                        t.remove()
-                    transform_controls.clear()
-                    return
+                gui_state.camera_traj_list = None
 
             @exit_button.on_click
             def _(_) -> None:
@@ -629,13 +826,9 @@ def define_gui(
         "Pause", icon=viser.Icon.PLAYER_PAUSE, visible=False
     )
 
-    # Play the camera trajectory when the play button is pressed.
-    @play_button.on_click
-    def _(_) -> None:
-        play_button.visible = False
-        pause_button.visible = True
-
-        def play() -> None:
+    # Poll the play button to see if we should be playing endlessly.
+    def play() -> None:
+        while True:
             while not play_button.visible:
                 max_frame = int(framerate_number.value * duration_number.value)
                 if max_frame > 0:
@@ -644,8 +837,15 @@ def define_gui(
                         preview_frame_slider.value + 1
                     ) % max_frame
                 time.sleep(1.0 / framerate_number.value)
+            time.sleep(0.1)
 
-        threading.Thread(target=play).start()
+    threading.Thread(target=play).start()
+
+    # Play the camera trajectory when the play button is pressed.
+    @play_button.on_click
+    def _(_) -> None:
+        play_button.visible = False
+        pause_button.visible = True
 
     # Play the camera trajectory when the play button is pressed.
     @pause_button.on_click
@@ -654,10 +854,15 @@ def define_gui(
         pause_button.visible = False
 
     preview_render_button = server.gui.add_button(
-        "Preview render", hint="Show a preview of the render in the viewport."
+        "Preview render",
+        hint="Show a preview of the render in the viewport.",
+        icon=viser.Icon.CAMERA_CHECK,
     )
     preview_render_stop_button = server.gui.add_button(
-        "Exit Render Preview", color="red", visible=False
+        "Exit render preview",
+        color="red",
+        icon=viser.Icon.CAMERA_CANCEL,
+        visible=False,
     )
 
     @preview_render_button.on_click
@@ -665,6 +870,9 @@ def define_gui(
         gui_state.preview_render = True
         preview_render_button.visible = False
         preview_render_stop_button.visible = True
+        play_button.visible = False
+        pause_button.visible = True
+        preset_submit_button.disabled = True
 
         maybe_pose_and_fov_rad = compute_and_update_preview_camera_state()
         if maybe_pose_and_fov_rad is None:
@@ -676,6 +884,8 @@ def define_gui(
         # Hide all render assets when we're previewing the render.
         nonlocal base_scene_node
         base_scene_node.visible = False
+        if input_camera_node_list is not None:
+            input_camera_node_list[0].visible = False
 
         # Back up and then set camera poses.
         for client in server.get_clients().values():
@@ -684,14 +894,17 @@ def define_gui(
                 client.camera.look_at,
                 client.camera.up_direction,
             )
-            client.camera.wxyz = pose.rotation().wxyz
-            client.camera.position = pose.translation()
+            with client.atomic():
+                client.camera.wxyz = pose.rotation().wxyz
+                client.camera.position = pose.translation()
 
-    @preview_render_stop_button.on_click
-    def _(_) -> None:
+    def stop_preview_render() -> None:
         gui_state.preview_render = False
         preview_render_button.visible = True
         preview_render_stop_button.visible = False
+        play_button.visible = True
+        pause_button.visible = False
+        preset_submit_button.disabled = False
 
         # Revert camera poses.
         for client in server.get_clients().values():
@@ -700,14 +913,22 @@ def define_gui(
             cam_position, cam_look_at, cam_up = camera_pose_backup_from_id.pop(
                 client.client_id
             )
-            client.camera.position = cam_position
-            client.camera.look_at = cam_look_at
-            client.camera.up_direction = cam_up
+            with client.atomic():
+                client.camera.position = cam_position
+                client.camera.look_at = cam_look_at
+                client.camera.up_direction = cam_up
             client.flush()
 
         # Un-hide render assets.
         nonlocal base_scene_node
         base_scene_node.visible = True
+        if input_camera_node_list is not None:
+            input_camera_node_list[0].visible = True
+        remove_preview_camera()
+
+    @preview_render_stop_button.on_click
+    def _(_) -> None:
+        stop_preview_render()
 
     def get_max_frame_index() -> int:
         return max(1, int(framerate_number.value * duration_number.value) - 1)
@@ -722,12 +943,12 @@ def define_gui(
             max=get_max_frame_index(),
             step=1,
             initial_value=0,
-            order=save_path_button.order + 0.01,
+            order=set_traj_button.order + 0.01,
             disabled=get_max_frame_index() == 1,
         )
         play_button.disabled = preview_frame_slider.disabled
         preview_render_button.disabled = preview_frame_slider.disabled
-        save_path_button.disabled = preview_frame_slider.disabled
+        set_traj_button.disabled = preview_frame_slider.disabled
 
         @preview_frame_slider.on_update
         def _(_) -> None:
@@ -748,19 +969,20 @@ def define_gui(
             )
             if gui_state.preview_render:
                 for client in server.get_clients().values():
-                    client.camera.wxyz = pose.rotation().wxyz
-                    client.camera.position = pose.translation()
+                    with client.atomic():
+                        client.camera.wxyz = pose.rotation().wxyz
+                        client.camera.position = pose.translation()
 
         return preview_frame_slider
 
-    save_path_button = server.gui.add_button(
-        "Set camera path",
+    set_traj_button = server.gui.add_button(
+        "Set camera trajectory",
         color="green",
         icon=viser.Icon.CHECK,
-        hint="Save the camera path to json.",
+        hint="Save the camera trajectory for rendering.",
     )
 
-    @save_path_button.on_click
+    @set_traj_button.on_click
     def _(event: viser.GuiEvent) -> None:
         assert event.client is not None
         num_frames = int(framerate_number.value * duration_number.value)
@@ -771,9 +993,9 @@ def define_gui(
                 [[focal, 0.0, 0.5 * W], [0.0, focal, 0.5 * H], [0.0, 0.0, 1.0]]
             )
 
-        camera_path_list = []
+        camera_traj_list = []
         for i in range(num_frames):
-            maybe_pose_and_fov_rad = camera_path.interpolate_pose_and_fov_rad(
+            maybe_pose_and_fov_rad = camera_traj.interpolate_pose_and_fov_rad(
                 i / num_frames
             )
             if maybe_pose_and_fov_rad is None:
@@ -783,7 +1005,7 @@ def define_gui(
             W = img_wh[0]
             K = get_intrinsics(W, H, fov_rad)
             w2c = pose.inverse().as_matrix()
-            camera_path_list.append(
+            camera_traj_list.append(
                 {
                     "w2c": w2c.flatten().tolist(),
                     "K": K.flatten().tolist(),
@@ -791,101 +1013,26 @@ def define_gui(
                 }
             )
         nonlocal gui_state
-        gui_state.camera_path_list = camera_path_list
+        gui_state.camera_traj_list = camera_traj_list
+        print(f"Get camera_traj_list: {gui_state.camera_traj_list}")
+
+        stop_preview_render()
 
     preview_frame_slider = add_preview_frame_slider()
 
-    loop = server.gui.add_checkbox(
+    loop_checkbox = server.gui.add_checkbox(
         "Loop", False, hint="Add a segment between the first and last keyframes."
     )
 
-    @loop.on_update
+    @loop_checkbox.on_update
     def _(_) -> None:
-        camera_path.loop = loop.value
-        duration_number.value = camera_path.compute_duration()
-
-    tension_slider = server.gui.add_slider(
-        "Spline tension",
-        min=0.0,
-        max=1.0,
-        initial_value=0.0,
-        step=0.01,
-        hint="Tension parameter for adjusting smoothness of spline interpolation.",
-    )
-
-    @tension_slider.on_update
-    def _(_) -> None:
-        camera_path.tension = tension_slider.value
-        camera_path.update_spline()
-
-    move_checkbox = server.gui.add_checkbox(
-        "Move keyframes",
-        initial_value=False,
-        hint="Toggle move handles for keyframes in the scene.",
-    )
-
-    transform_controls: list[viser.SceneNodeHandle] = []
-
-    @move_checkbox.on_update
-    def _(event: viser.GuiEvent) -> None:
-        # Clear move handles when toggled off.
-        if move_checkbox.value is False:
-            for t in transform_controls:
-                t.remove()
-            transform_controls.clear()
-            return
-
-        def _make_transform_controls_callback(
-            keyframe: tuple[Keyframe, viser.SceneNodeHandle],
-            controls: viser.TransformControlsHandle,
-        ) -> None:
-            @controls.on_update
-            def _(_) -> None:
-                keyframe[0].wxyz = controls.wxyz
-                keyframe[0].position = controls.position
-
-                keyframe[1].wxyz = controls.wxyz
-                keyframe[1].position = controls.position
-
-                camera_path.update_spline()
-
-        # Show move handles.
-        assert event.client is not None
-        for keyframe_index, keyframe in camera_path._keyframes.items():
-            controls = event.client.scene.add_transform_controls(
-                str(Path(scene_node_prefix) / f"keyframe_move/{keyframe_index}"),
-                scale=0.4,
-                wxyz=keyframe[0].wxyz,
-                position=keyframe[0].position,
-            )
-            transform_controls.append(controls)
-            _make_transform_controls_callback(keyframe, controls)
-
-    show_keyframe_checkbox = server.gui.add_checkbox(
-        "Show keyframes",
-        initial_value=True,
-        hint="Show keyframes in the scene.",
-    )
-
-    @show_keyframe_checkbox.on_update
-    def _(_: viser.GuiEvent) -> None:
-        camera_path.set_keyframes_visible(show_keyframe_checkbox.value)
-
-    show_spline_checkbox = server.gui.add_checkbox(
-        "Show spline",
-        initial_value=True,
-        hint="Show camera path spline in the scene.",
-    )
-
-    @show_spline_checkbox.on_update
-    def _(_) -> None:
-        camera_path.show_spline = show_spline_checkbox.value
-        camera_path.update_spline()
+        camera_traj.loop = loop_checkbox.value
+        duration_number.value = camera_traj.compute_duration()
 
     @transition_sec_number.on_update
     def _(_) -> None:
-        camera_path.default_transition_sec = transition_sec_number.value
-        duration_number.value = camera_path.compute_duration()
+        camera_traj.default_transition_sec = transition_sec_number.value
+        duration_number.value = camera_traj.compute_duration()
 
     preview_camera_handle: viser.SceneNodeHandle | None = None
 
@@ -895,13 +1042,13 @@ def define_gui(
             preview_camera_handle.remove()
             preview_camera_handle = None
 
-    def compute_and_update_preview_camera_state() -> tuple[tf.SE3, float] | None:
+    def compute_and_update_preview_camera_state() -> tuple[vt.SE3, float] | None:
         """Update the render tab state with the current preview camera pose.
         Returns current camera pose + FOV if available."""
 
         if preview_frame_slider is None:
             return None
-        maybe_pose_and_fov_rad = camera_path.interpolate_pose_and_fov_rad(
+        maybe_pose_and_fov_rad = camera_traj.interpolate_pose_and_fov_rad(
             preview_frame_slider.value / get_max_frame_index()
         )
         if maybe_pose_and_fov_rad is None:
@@ -909,7 +1056,7 @@ def define_gui(
             return None
         pose, fov_rad = maybe_pose_and_fov_rad
         gui_state.preview_fov = fov_rad
-        gui_state.preview_aspect = camera_path.get_aspect()
+        gui_state.preview_aspect = camera_traj.get_aspect()
         return pose, fov_rad
 
     # We back up the camera poses before and after we start previewing renders.
@@ -931,16 +1078,16 @@ def define_gui(
         else:
             preview_frame_slider = old
 
-        camera_path.framerate = framerate_number.value
-        camera_path.update_spline()
+        camera_traj.framerate = framerate_number.value
+        camera_traj.update_spline()
 
-    camera_path = CameraPath(
+    camera_traj = CameraTrajectory(
         server,
         duration_number,
         scene_node_prefix=scene_node_prefix,
         **kwargs,
     )
-    camera_path.default_fov = fov_degree_slider.value / 180.0 * np.pi
-    camera_path.default_transition_sec = transition_sec_number.value
+    camera_traj.default_fov = fov_degree_slider.value / 180.0 * np.pi
+    camera_traj.default_transition_sec = transition_sec_number.value
 
     return gui_state

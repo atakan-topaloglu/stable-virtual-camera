@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 import torch
 import torch.nn as nn
 
-from scena.modules.layers import (
+from stableviews.modules.layers import (
     Downsample,
     GroupNorm32,
     ResBlock,
@@ -11,11 +11,11 @@ from scena.modules.layers import (
     Upsample,
     timestep_embedding,
 )
-from scena.modules.transformer import MultiviewTransformer
+from stableviews.modules.transformer import MultiviewTransformer
 
 
 @dataclass
-class ScenaParams(object):
+class StableViewsParams(object):
     in_channels: int = 11
     model_channels: int = 320
     out_channels: int = 4
@@ -36,8 +36,8 @@ class ScenaParams(object):
         assert len(self.channel_mult) == len(self.transformer_depth)
 
 
-class Scena(nn.Module):
-    def __init__(self, params: ScenaParams) -> None:
+class StableViews(nn.Module):
+    def __init__(self, params: StableViewsParams) -> None:
         super().__init__()
         self.params = params
         self.model_channels = params.model_channels
@@ -214,3 +214,21 @@ class Scena(nn.Module):
             )
         h = h.type(x.dtype)
         return self.out(h)
+
+
+class SGMWrapper(nn.Module):
+    def __init__(self, module: StableViews):
+        super().__init__()
+        self.module = module
+
+    def forward(
+        self, x: torch.Tensor, t: torch.Tensor, c: dict, **kwargs
+    ) -> torch.Tensor:
+        x = torch.cat((x, c.get("concat", torch.Tensor([]).type_as(x))), dim=1)
+        return self.module(
+            x,
+            t=t,
+            y=c["crossattn"],
+            dense_y=c["dense_vector"],
+            **kwargs,
+        )

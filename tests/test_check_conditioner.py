@@ -4,8 +4,8 @@ import torch
 import torch.nn.functional as F
 from einops import repeat
 
-from scena.modules.autoencoder import AutoEncoder
-from scena.modules.conditioner import CLIPConditioner
+from stableviews.modules.autoencoder import AutoEncoder
+from stableviews.modules.conditioner import CLIPConditioner
 
 sys.path.insert(0, "/admin/home-hangg/projects/stable-research/")
 from scripts.threeD_diffusion.run_eval import (
@@ -24,11 +24,11 @@ version_dict, engine = init_model(
     config="/admin/home-hangg/projects/stable-research/configs/3d_diffusion/jensen/inference/sd_3d-view-attn_21FT_discrete_no-clip-txt_pl---nk_plucker_concat_norm_mv_cat3d_v3_discrete_no-clip-txt_3d-attn-with-view-attn-mixing_freeze-pretrained_5355784_ckpt600000.yaml",
 )
 conditioner_sgm = engine.conditioner
-# with torch.inference_mode(), torch.amp.autocast(
+# with torch.inference_mode(), torch.autocast(
 #     device_type=device.type,
 #     dtype=torch.float16,  # Note that this has to be f16 to match single image script.
 # ):
-with torch.inference_mode(), torch.amp.autocast(
+with torch.inference_mode(), torch.autocast(
     device_type=device.type, dtype=torch.bfloat16
 ):
     batch, batch_uc = get_batch(
@@ -54,7 +54,7 @@ input_masks = value_dict["cond_frames_mask"]
 pluckers = value_dict["plucker_coordinate"]
 
 clip_conditioner = CLIPConditioner().to(device)
-with torch.inference_mode(), torch.amp.autocast(
+with torch.inference_mode(), torch.autocast(
     device_type=device.type, dtype=torch.bfloat16
 ):
     c_crossattn = clip_conditioner(imgs[input_masks]).mean(0)
@@ -67,7 +67,7 @@ assert torch.allclose(uc["crossattn"], uc_crossattn.float()), __import__(
 ).set_trace()
 
 ae = AutoEncoder().to(device)
-with torch.inference_mode(), torch.amp.autocast(
+with torch.inference_mode(), torch.autocast(
     device_type=device.type, dtype=torch.bfloat16
 ):
     input_latents = F.pad(ae.encode(imgs[input_masks]), (0, 0, 0, 0, 0, 1), value=1.0)

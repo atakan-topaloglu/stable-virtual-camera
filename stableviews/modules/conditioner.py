@@ -1,5 +1,3 @@
-from typing import cast
-
 import kornia
 import open_clip
 import torch
@@ -7,15 +5,15 @@ from torch import nn
 
 
 class CLIPConditioner(nn.Module):
+    mean: torch.Tensor
+    std: torch.Tensor
+
     def __init__(self):
         super().__init__()
-        self.module = cast(
-            open_clip.CLIP,
-            open_clip.create_model_and_transforms(
-                "ViT-H-14", pretrained="laion2b_s32b_b79k"
-            )[0],
-        )
-        self.module.eval().requires_grad_(False)
+        self.module = open_clip.create_model_and_transforms(
+            "ViT-H-14", pretrained="laion2b_s32b_b79k"
+        )[0]
+        self.module.eval().requires_grad_(False)  # type: ignore
         self.register_buffer(
             "mean", torch.Tensor([0.48145466, 0.4578275, 0.40821073]), persistent=False
         )

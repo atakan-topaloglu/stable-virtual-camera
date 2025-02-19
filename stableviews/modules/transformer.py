@@ -1,8 +1,8 @@
 import torch
 import torch.nn.functional as F
-import xformers.ops
 from einops import rearrange, repeat
 from torch import nn
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
 
 class GEGLU(nn.Module):
@@ -63,22 +63,13 @@ class Attention(nn.Module):
         context = context if context is not None else x
         k = self.to_k(context)
         v = self.to_v(context)
-        b, _, _ = q.shape
         q, k, v = map(
-            lambda t: t.unsqueeze(3)
-            .reshape(b, t.shape[1], self.heads, self.dim_head)
-            .permute(0, 2, 1, 3)
-            .reshape(b * self.heads, t.shape[1], self.dim_head)
-            .contiguous(),
+            lambda t: rearrange(t, "b l (h d) -> b h l d", h=self.heads),
             (q, k, v),
         )
-        out = xformers.ops.memory_efficient_attention(q, k, v)
-        out = (
-            out.unsqueeze(0)
-            .reshape(b, self.heads, out.shape[1], self.dim_head)
-            .permute(0, 2, 1, 3)
-            .reshape(b, out.shape[1], self.heads * self.dim_head)
-        )
+        with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
+            out = F.scaled_dot_product_attention(q, k, v)
+        out = rearrange(out, "b h l d -> b l (h d)")
         out = self.to_out(out)
         return out
 

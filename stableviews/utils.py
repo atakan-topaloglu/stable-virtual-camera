@@ -1,7 +1,7 @@
 import safetensors.torch
 import torch
 
-from scena.model import Scena, ScenaParams
+from stableviews.model import StableViews, StableViewsParams
 
 
 def print_load_warning(missing: list[str], unexpected: list[str]) -> None:
@@ -15,7 +15,9 @@ def print_load_warning(missing: list[str], unexpected: list[str]) -> None:
         print(f"Got {len(unexpected)} unexpected keys:\n\t" + "\n\t".join(unexpected))
 
 
-def load_model(device: str | torch.device = "cuda", verbose: bool = False) -> Scena:
+def load_model(
+    device: str | torch.device = "cuda", verbose: bool = False
+) -> StableViews:
     state_dict = safetensors.torch.load_file(
         "/admin/home-hangg/projects/stable-research/logs/inference/3d_diffusion-jensen-3d_attn-all1_img2vid25_FT21drunk_plucker_concat_norm_mv_cat3d_v3_discrete_no-clip-txt_3d-attn-with-view-attn-mixing_freeze-pretrained_5355784/epoch=000000-step=000600000_inference.safetensors",
         device=str(device),
@@ -27,7 +29,7 @@ def load_model(device: str | torch.device = "cuda", verbose: bool = False) -> Sc
     }
 
     with torch.device("meta"):
-        model = Scena(ScenaParams()).to(torch.bfloat16)
+        model = StableViews(StableViewsParams()).to(torch.bfloat16)
 
     missing, unexpected = model.load_state_dict(
         model_state_dict, strict=False, assign=True
