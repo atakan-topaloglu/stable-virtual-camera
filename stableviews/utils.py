@@ -1,7 +1,9 @@
+import os
 import safetensors.torch
 import torch
 
 from stableviews.model import StableViews, StableViewsParams
+from huggingface_hub import hf_hub_download
 
 
 def print_load_warning(missing: list[str], unexpected: list[str]) -> None:
@@ -16,10 +18,18 @@ def print_load_warning(missing: list[str], unexpected: list[str]) -> None:
 
 
 def load_model(
-    device: str | torch.device = "cuda", verbose: bool = False
+    pretrained_model_name_or_path: str, weight_name: str,device: str | torch.device = "cuda", verbose: bool = False
 ) -> StableViews:
+
+    if os.path.isdir(pretrained_model_name_or_path):
+        weight_path = os.path.join(pretrained_model_name_or_path, weight_name)
+    else:
+        weight_path = hf_hub_download(
+            repo_id=pretrained_model_name_or_path, filename=weight_name
+        )
+
     state_dict = safetensors.torch.load_file(
-        "/admin/home-hangg/projects/stable-research/logs/inference/3d_diffusion-jensen-3d_attn-all1_img2vid25_FT21drunk_plucker_concat_norm_mv_cat3d_v3_discrete_no-clip-txt_3d-attn-with-view-attn-mixing_freeze-pretrained_5355784/epoch=000000-step=000600000_inference.safetensors",
+        weight_path,
         device=str(device),
     )
     model_state_dict = {

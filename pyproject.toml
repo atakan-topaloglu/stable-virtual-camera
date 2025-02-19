@@ -25,6 +25,7 @@ dependencies = [
     "numpy<2.0.0",
     "pyav",
     "imageio[ffmpeg]",
+    "huggingface-hub"
 ]
 
 [project.optional-dependencies]

@@ -84,9 +84,8 @@ else:
 
 # Shared global variables across sessions.
 DUST3R = Dust3rPipeline(device=device)  # type: ignore
-MODEL = SGMWrapper(load_model(device="cpu", verbose=True).eval()).to(device)
-# if COMPILE:
-#     MODEL = torch.compile(MODEL, dynamic=False)
+MODEL = SGMWrapper(load_model("stabilityai/stableviews", "model.safetensors", device="cpu", verbose=True).eval()).to(device)
+
 AE = AutoEncoder(chunk_size=1).to(device)
 CONDITIONER = CLIPConditioner().to(device)
 DISCRETIZATION = DDPMDiscretization()
@@ -100,6 +99,11 @@ VERSION_DICT = {
     "options": {},
 }
 SERVERS = {}
+
+if COMPILE:
+    MODEL = torch.compile(MODEL, dynamic=False)
+    CONDITIONER = torch.compile(CONDITIONER, dynamic=False)
+    AE = torch.compile(AE, dynamic=False)
 
 
 class ScenaRenderer(object):
