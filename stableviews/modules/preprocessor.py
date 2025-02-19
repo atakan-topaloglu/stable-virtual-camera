@@ -7,7 +7,7 @@ import numpy as np
 import torch
 
 sys.path.insert(
-    0, osp.realpath(osp.join(osp.dirname(__file__), "../../../submodules/dust3r/"))
+    0, osp.realpath(osp.join(osp.dirname(__file__), "../../third_party/dust3r/"))
 )
 from dust3r.cloud_opt import GlobalAlignerMode, global_aligner
 from dust3r.image_pairs import make_pairs

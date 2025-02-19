@@ -6,7 +6,26 @@ build-backend = "setuptools.build_meta"
 name = "stableviews"
 version = "0.0.0"
 requires-python = ">=3.10"
-dependencies = ["torch", "roma", "viser", "tyro", "ninja"]
+dependencies = [
+    "torch",
+    "roma",
+    "viser",
+    "tyro",
+    "ninja",
+    "gradio",
+    "viser",
+    "einops",
+    "colorama",
+    "pytorch-lightning",
+    "splines",
+    "diffusers",
+    "kornia",
+    "open-clip-torch",
+    "accelerate",
+    "numpy<2.0.0",
+    "pyav",
+    "imageio[ffmpeg]",
+]
 
 [project.optional-dependencies]
 dev = ["ruff", "ipdb", "pytest", "line_profiler", "pre-commit"]
