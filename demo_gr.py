@@ -55,23 +55,23 @@ HEADER = """
   }
 </style>
 """
-EXAMPLE_DIR = "/admin/home-hangg/projects/stable-research/.bak/demo-assets/"
+EXAMPLE_DIR = "assets/demo-assets/"
 EXAMPLE_MAP = [
     (
-        "/admin/home-hangg/projects/stable-research/.bak/demo-assets/nonsquare_1.png",
-        ["/admin/home-hangg/projects/stable-research/.bak/demo-assets/nonsquare_1.png"],
+        "assets/demo-assets/nonsquare_1.png",
+        ["assets/demo-assets/nonsquare_1.png"],
     ),
     (
-        "/admin/home-hangg/projects/stable-research/.bak/demo-assets/scene_1.png",
-        ["/admin/home-hangg/projects/stable-research/.bak/demo-assets/scene_1.png"],
+        "assets/demo-assets/scene_1.png",
+        ["assets/demo-assets/scene_1.png"],
     ),
     (
-        "/admin/home-hangg/projects/stable-research/.bak/demo-assets/scene_2_1.png",
+        "assets/demo-assets/scene_2_1.png",
         [
-            "/admin/home-hangg/projects/stable-research/.bak/demo-assets/scene_2_1.png",
-            "/admin/home-hangg/projects/stable-research/.bak/demo-assets/scene_2_2.png",
-            "/admin/home-hangg/projects/stable-research/.bak/demo-assets/scene_2_3.png",
-            "/admin/home-hangg/projects/stable-research/.bak/demo-assets/scene_2_4.png",
+            "assets/demo-assets/scene_2_1.png",
+            "assets/demo-assets/scene_2_2.png",
+            "assets/demo-assets/scene_2_3.png",
+            "assets/demo-assets/scene_2_4.png",
         ],
     ),
 ]
