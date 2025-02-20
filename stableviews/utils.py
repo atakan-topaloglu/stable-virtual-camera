@@ -27,6 +27,9 @@ def load_model(
         weight_path = hf_hub_download(
             repo_id=pretrained_model_name_or_path, filename=weight_name
         )
+        config_path = hf_hub_download(
+            repo_id=pretrained_model_name_or_path, filename="config.yaml"
+        )
 
     state_dict = safetensors.torch.load_file(
         weight_path,
