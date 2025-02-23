@@ -106,7 +106,7 @@ if COMPILE:
     AE = torch.compile(AE, dynamic=False)
 
 
-class ScenaRenderer(object):
+class StableViewsRenderer(object):
     def __init__(self, server: viser.ViserServer):
         self.server = server
         self.gui_state = None
@@ -514,7 +514,7 @@ def start_server(request: gr.Request):
         )
     # Give it enough time to start.
     time.sleep(1)
-    return ScenaRenderer(server), gr.HTML(
+    return StableViewsRenderer(server), gr.HTML(
         f'<iframe src="{server_url}" style="display: block; margin: auto; width: 100%; height: 60vh;" frameborder="0"></iframe>',
         container=True,
     )
