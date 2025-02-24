@@ -424,7 +424,7 @@ class StableViewsSingleImageRenderer(object):
             "roll",
         ],
     ):
-        if traj == "orbit":
+        if "orbit" in traj:
 
             def traj_fn(
                 ref_c2w: torch.Tensor,
@@ -456,7 +456,7 @@ class StableViewsSingleImageRenderer(object):
                     2.0,
                 )
 
-        if traj == "turntable":
+        if "turntable" in traj:
 
             def traj_fn(
                 ref_c2w: torch.Tensor,
@@ -490,7 +490,7 @@ class StableViewsSingleImageRenderer(object):
                     0.1,
                 )
 
-        elif traj == "lemniscate":
+        elif "lemniscate" in traj:
 
             def traj_fn(
                 ref_c2w: torch.Tensor,
@@ -524,7 +524,7 @@ class StableViewsSingleImageRenderer(object):
                     2.0,
                 )
 
-        elif traj == "spiral":
+        elif "spiral" in traj:
 
             def traj_fn(
                 ref_c2w: torch.Tensor,
@@ -668,7 +668,7 @@ class StableViewsSingleImageRenderer(object):
                     10.0,
                 )
 
-        elif traj == "roll":
+        elif "roll" in traj:
 
             def traj_fn(
                 ref_c2w: torch.Tensor,
@@ -794,7 +794,8 @@ class StableViewsSingleImageRenderer(object):
         self,
         img: np.ndarray,
         traj: Literal[
-            "360",
+            "orbit",
+            "turntable",
             "lemniscate",
             "spiral",
             "dolly zoom-in",
@@ -1602,15 +1603,16 @@ def get_examples(selection: gr.SelectData):
         gr.Gallery(visible=False),
     )
 
-
 def main(server_port: int | None = None, share: bool = True):
     with gr.Blocks(head=HEADER) as demo:
-        with gr.Tabs():
+        # Assign the Tabs container to a variable so that we can attach a change event.
+        tabs = gr.Tabs()
+        with tabs:
             with gr.Tab("Basic (Single Image)"):
                 single_image_renderer = StableViewsSingleImageRenderer(StableViewsSingleImageConfig())
                 with gr.Row():
                     gr.Markdown(
-                                    """
+                        """
                     # Stable Views Single Image gradio demo
 
                     ## Workflow
@@ -1622,7 +1624,7 @@ def main(server_port: int | None = None, share: bool = True):
                     > For a 80-frame video, intermediate output takes 20s, final output takes 2~3m.
                     > Our model currently doesn't work well with human and animal images.
                                             """
-                                )
+                    )
                     with gr.Row():
                         with gr.Column():
                             uploaded_img = gr.Image(
@@ -1635,7 +1637,8 @@ def main(server_port: int | None = None, share: bool = True):
                             )
                             traj_handle = gr.Dropdown(
                                 choices=[
-                                    "360",
+                                    "orbit",
+                                    "turntable",
                                     "lemniscate",
                                     "spiral",
                                     "dolly zoom-in",
@@ -1821,9 +1824,21 @@ def main(server_port: int | None = None, share: bool = True):
                         render_btn.click(
                             lambda: gr.update(visible=True), outputs=[render_progress]
                         )
-
-        # Register the session initialization and cleanup functions.
-        demo.load(start_server, outputs=[renderer, viewport])
+        # Attach a callback using the tab select API (as described in https://www.gradio.app/docs/gradio/tab#tab-select)
+        # to load the Advanced tab server only once when the tab is selected.
+        advanced_loaded = gr.State(value=False)
+        def maybe_load_server(req: gr.Request, loaded, evt: gr.SelectData):
+            if evt.value == "Advanced" and not loaded:
+                # Call start_server with the current request since it's triggered by tab selection.
+                renderer_obj, viewport_obj = start_server(req)
+                return renderer_obj, viewport_obj, True
+            else:
+                return gr.update(), gr.update(), loaded
+        tabs.select(
+            maybe_load_server,
+            inputs=[advanced_loaded],
+            outputs=[renderer, viewport, advanced_loaded]
+        )
         demo.unload(stop_server)
     demo.launch(
         share=share,
@@ -1831,7 +1846,6 @@ def main(server_port: int | None = None, share: bool = True):
         show_error=True,
         allowed_paths=[WORK_DIR, EXAMPLE_DIR],
     )
-
 
 if __name__ == "__main__":
     tyro.cli(main)
