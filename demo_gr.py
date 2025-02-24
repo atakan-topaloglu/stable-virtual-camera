@@ -144,30 +144,11 @@ class StableViewsSingleImageConfig:
         self.options = {
             "as_shuffled": True,
             "discretization": 0,
-            "beta_linear_start": 5e-06,
-            "beta_linear_end": 0.012,
-            "beta_schedule": "linear",
+            "beta_linear_start": 5e-6,
             "log_snr_shift": 2.4,
-            "guider": (6, 5),
             "guider_types": [1, 2],
             "cfg": (3.0, 2.0),
-            "cfg_min": 1.2,
-            "force_uc_zero_embeddings": ["cond_frames", "cond_frames_without_noise"],
             "num_steps": 50,
-            "additional_guider_kwargs": {
-                "additional_cond_keys": ["replace", "dense_vector"],
-                "scale_rule_config": {
-                    "target": "sgm.modules.diffusionmodules.guiders.LowCFGCloseInputFrame",
-                    "params": {"scale_low": 1.2},
-                },
-                "scale_schedule_config": {
-                    "target": "sgm.modules.diffusionmodules.guiders.IdentitySchedule",
-                    "params": {"scale": 2.0},
-                },
-                "dyn_thresh_config": {
-                    "target": "sgm.modules.diffusionmodules.guiders.NoDynamicThresholding"
-                },
-            },
             "num_frames": self.context_window,
             "encoding_t": 1,
             "decoding_t": 1,
@@ -424,7 +405,7 @@ class StableViewsSingleImageRenderer(object):
             "roll",
         ],
     ):
-        if "orbit" in traj:
+        if traj in ["orbit"]:
 
             def traj_fn(
                 ref_c2w: torch.Tensor,
@@ -456,7 +437,7 @@ class StableViewsSingleImageRenderer(object):
                     2.0,
                 )
 
-        if "turntable" in traj:
+        elif traj in ["turntable"]:
 
             def traj_fn(
                 ref_c2w: torch.Tensor,
@@ -490,7 +471,7 @@ class StableViewsSingleImageRenderer(object):
                     0.1,
                 )
 
-        elif "lemniscate" in traj:
+        elif traj in ["lemniscate"]:
 
             def traj_fn(
                 ref_c2w: torch.Tensor,
@@ -524,7 +505,7 @@ class StableViewsSingleImageRenderer(object):
                     2.0,
                 )
 
-        elif "spiral" in traj:
+        elif traj in ["spiral"]:
 
             def traj_fn(
                 ref_c2w: torch.Tensor,
@@ -726,15 +707,43 @@ class StableViewsSingleImageRenderer(object):
             "roll",
         ],
         num_targets: int = 80,
+        shorter: int = 576,
+        keep_aspect: bool = True,
     ):
         traj_fn = self.get_traj_fn(traj)
 
+        """
+        # Has to be 64 multiple for the network.
+        shorter = round(shorter / 64) * 64
+        for img, K in zip(input_imgs, input_Ks):
+            img = rearrange(img, "h w c -> 1 c h w")
+            if not keep_aspect:
+                img, K = transform_img_and_K(img, (shorter, shorter), K=K[None])
+            else:
+                img, K = transform_img_and_K(img, shorter, K=K[None], size_stride=64)
+            K = K / np.array([img.shape[-1], img.shape[-2], 1])[:, None]
+            new_input_imgs.append(img)
+            new_input_Ks.append(K)
+        input_imgs = torch.cat(new_input_imgs, 0)
+        input_imgs = rearrange(input_imgs, "b c h w -> b h w c")[..., :3]
+        input_Ks = torch.cat(new_input_Ks, 0)
+        """
+
         num_inputs = 1
+        # Has to be 64 multiple for the network.
+        shorter = round(shorter / 64) * 64
         input_imgs = repeat(
-            torch.as_tensor(img) / 255.0, "h w c -> n c h w", n=num_inputs
+            torch.as_tensor(img / 255.0, dtype=torch.float32), "h w c -> n c h w", n=num_inputs
         )
-        input_imgs = transform_img_and_K(input_imgs, None, self.cfg.target_wh)[0]
         input_Ks = repeat(get_default_intrinsics(), "1 i j -> n i j", n=num_inputs)
+        if not keep_aspect:
+            input_imgs, K = transform_img_and_K(input_imgs, (shorter, shorter), K=input_Ks)
+        else:
+            input_imgs, K = transform_img_and_K(input_imgs, shorter, K=input_Ks, size_stride=64)
+        input_Ks = K / np.array([img.shape[-1], img.shape[-2], 1], dtype=np.float32)[:, None]
+
+        
+        #input_imgs = transform_img_and_K(input_imgs, None, self.cfg.target_wh)[0]
         input_c2ws = repeat(torch.eye(4), "i j -> n i j", n=num_inputs)
         target_c2ws, target_Ks, camera_scale = traj_fn(
             input_c2ws[0], input_Ks[0], num_targets
@@ -812,23 +821,13 @@ class StableViewsSingleImageRenderer(object):
         ],
         num_targets: int,
         seed: int = 23,
+        shorter: int = 576,
     ):
-        data = self.prepare(img, traj, num_targets)
+        keep_aspect = False
+        data = self.prepare(img, traj, num_targets, shorter, keep_aspect)
         data_name = hashlib.sha256(img.tobytes()).hexdigest()[:16]
 
         output_dir = osp.join(self.cfg.output_root, data_name, f"{traj}_{num_targets}")
-
-        input_samples = rearrange(
-            data.input_imgs.cpu().numpy() * 255.0,
-            "n c h w -> n h w c",
-        ).astype(np.uint8)
-        input_dir = osp.join(output_dir, "input")
-        os.makedirs(input_dir, exist_ok=True)
-        for i, img in enumerate(input_samples):
-            iio.imwrite(osp.join(input_dir, f"{i:04d}.png"), img)
-        input_path = osp.join(output_dir, "input.mp4")
-        iio.imwrite(input_path, input_samples, fps=2.0)
-        yield input_path, None, None
 
         #samplers = init_sampling_no_st(options=self.cfg.options)
         samplers = create_samplers(
@@ -1007,7 +1006,7 @@ class StableViewsSingleImageRenderer(object):
             iio.imwrite(osp.join(first_pass_dir, f"{i:04d}.png"), img)
         first_pass_path = osp.join(output_dir, "first_pass.mp4")
         iio.imwrite(first_pass_path, first_pass_samples, fps=5.0)
-        yield input_path, first_pass_path, None
+        yield first_pass_path, None
 
         assert (
             data.anchor_indices is not None
@@ -1174,7 +1173,7 @@ class StableViewsSingleImageRenderer(object):
         second_pass_path = osp.join(output_dir, "second_pass.mp4")
         iio.imwrite(second_pass_path, second_pass_samples, fps=30.0)
 
-        yield input_path, first_pass_path, second_pass_path
+        yield first_pass_path, second_pass_path
 
 class StableViewsRenderer(object):
     def __init__(self, server: viser.ViserServer):
@@ -1581,7 +1580,7 @@ def start_server(request: gr.Request):
     # Give it enough time to start.
     time.sleep(1)
     return StableViewsRenderer(server), gr.HTML(
-        f'<iframe src="{server_url}" style="display: block; margin: auto; width: 100%; height: 60vh;" frameborder="0"></iframe>',
+        f'<iframe src="{server_url}" style="display: block; margin: auto; width: 100%; height: 60vh; overflow: scroll;" frameborder="0"></iframe>',
         container=True,
     )
 
@@ -1621,58 +1620,58 @@ def main(server_port: int | None = None, share: bool = True):
                     2. Choose camera trajecotry and #frames, click "Render".
                     3. Three videos will be generated: preprocessed input, intermediate output, and final output.
 
-                    > For a 80-frame video, intermediate output takes 20s, final output takes 2~3m.
+                    > For a 80-frame video, intermediate output takes 20s, final output takes ~5 minutes.
                     > Our model currently doesn't work well with human and animal images.
                                             """
                     )
-                    with gr.Row():
-                        with gr.Column():
-                            uploaded_img = gr.Image(
-                                type="numpy", label="Upload", height=single_image_renderer.cfg.target_wh[1]
-                            )
-                            gr.Examples(
-                                examples=sorted(glob(f"{EXAMPLE_DIR}*png")),
-                                inputs=[uploaded_img],
-                                label="Examples",
-                            )
-                            traj_handle = gr.Dropdown(
-                                choices=[
-                                    "orbit",
-                                    "turntable",
-                                    "lemniscate",
-                                    "spiral",
-                                    "dolly zoom-in",
-                                    "dolly zoom-out",
-                                    "zoom-in",
-                                    "zoom-out",
-                                    "pan-forward",
-                                    "pan-backward",
-                                    "pan-up",
-                                    "pan-down",
-                                    "pan-left",
-                                    "pan-right",
-                                    "roll",
-                                ],
-                                label="Preset trajectory",
-                            )
-                            num_targets_handle = gr.Slider(30, 150, 80, label="#Frames")
-                            seed_handle = gr.Number(value=single_image_renderer.cfg.seed, label="Random seed")
-                            render_btn = gr.Button("Render")
-                        with gr.Column():
-                            input_video = gr.Video(
-                                label="Preprocessed input", autoplay=True, loop=True
-                            )
-                            fast_video = gr.Video(
-                                label="Intermediate output [1/2]", autoplay=True, loop=True
-                            )
-                            slow_video = gr.Video(
-                                label="Final output [2/2]", autoplay=True, loop=True
-                            )
-                            render_btn.click(
-                                single_image_renderer.render_video,
-                                inputs=[uploaded_img, traj_handle, num_targets_handle, seed_handle],
-                                outputs=[input_video, fast_video, slow_video],
-                            )
+                with gr.Row():
+                    with gr.Column():
+                        uploaded_img = gr.Image(
+                            type="numpy", label="Upload", height=single_image_renderer.cfg.target_wh[1]
+                        )
+                        gr.Examples(
+                            examples=sorted(glob(f"{EXAMPLE_DIR}*png")),
+                            inputs=[uploaded_img],
+                            label="Examples",
+                        )
+                        traj_handle = gr.Dropdown(
+                            choices=[
+                                "orbit",
+                                "turntable",
+                                "lemniscate",
+                                "spiral",
+                                "dolly zoom-in",
+                                "dolly zoom-out",
+                                "zoom-in",
+                                "zoom-out",
+                                "pan-forward",
+                                "pan-backward",
+                                "pan-up",
+                                "pan-down",
+                                "pan-left",
+                                "pan-right",
+                                "roll",
+                            ],
+                            label="Preset trajectory",
+                        )
+                        num_targets_handle = gr.Slider(30, 150, 80, label="#Frames")
+                        seed_handle = gr.Number(value=single_image_renderer.cfg.seed, label="Random seed")
+                        shorter = gr.Number(
+                            value=576, label="Resize", scale=3
+                        )
+                        render_btn = gr.Button("Render")
+                    with gr.Column():
+                        fast_video = gr.Video(
+                            label="Intermediate output [1/2]", autoplay=True, loop=True
+                        )
+                        slow_video = gr.Video(
+                            label="Final output [2/2]", autoplay=True, loop=True
+                        )
+                        render_btn.click(
+                            single_image_renderer.render_video,
+                            inputs=[uploaded_img, traj_handle, num_targets_handle, seed_handle, shorter],
+                            outputs=[fast_video, slow_video],
+                        )
 
             with gr.Tab("Advanced"):
                 renderer = gr.State()
@@ -1686,6 +1685,8 @@ def main(server_port: int | None = None, share: bool = True):
                     inputs=[renderer],
                     outputs=[render_btn],
                 )
+                with gr.Row():
+                    gr.Markdown("**The pointcloud shown below is not used as an input to the model. It's for visualization purposes only.**")
                 with gr.Row():
                     viewport = gr.HTML(container=True)
                 with gr.Row():
