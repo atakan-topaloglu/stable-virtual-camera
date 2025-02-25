@@ -25,6 +25,7 @@ from pytorch_lightning import seed_everything
 from tqdm import tqdm
 import imageio.v3 as iio
 from PIL import Image
+import tempfile
 
 from stableviews.eval import (
     IS_TORCH_NIGHTLY,
@@ -62,6 +63,7 @@ from stableviews.utils import load_model
 
 device = "cuda:0"
 
+os.environ["GRADIO_TEMP_DIR"] = os.path.join(os.environ.get("TMPDIR", "/tmp"), "gradio")
 
 # Constants.
 WORK_DIR = "work_dirs/demo_gr"
@@ -86,6 +88,13 @@ EXAMPLE_MAP = [
         ],
     ),
 ]
+
+# Delete previous gradio temp dir folder
+if os.path.exists(os.environ["GRADIO_TEMP_DIR"]):
+    print(f"Deleting {os.environ['GRADIO_TEMP_DIR']}")
+    import shutil
+
+    shutil.rmtree(os.environ["GRADIO_TEMP_DIR"])
 
 # Precompute hash values for all example images.
 EXAMPLE_HASHES = {}
@@ -1003,13 +1012,17 @@ class StableViewsSingleImageRenderer(object):
             * 255.0,
             "n c h w -> n h w c",
         ).astype(np.uint8)
-        first_pass_dir = osp.join(output_dir, "first_pass")
-        os.makedirs(first_pass_dir, exist_ok=True)
-        for i, img in enumerate(first_pass_samples):
-            iio.imwrite(osp.join(first_pass_dir, f"{i:04d}.png"), img)
-        first_pass_path = osp.join(output_dir, "first_pass.mp4")
-        iio.imwrite(first_pass_path, first_pass_samples, fps=5.0)
-        yield first_pass_path, None
+
+        if data_name not in EXAMPLE_HASHES:
+            first_pass_dir = osp.join(output_dir, "first_pass")
+            os.makedirs(first_pass_dir, exist_ok=True)
+            first_pass_path = osp.join(output_dir, "first_pass.mp4")
+            iio.imwrite(first_pass_path, first_pass_samples, fps=5.0)
+            yield first_pass_path, None
+        else:
+            first_pass_tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+            iio.imwrite(first_pass_tmp_file.name, first_pass_samples, fps=5.0)
+            yield first_pass_tmp_file.name, None
 
         assert (
             data.anchor_indices is not None
@@ -1169,14 +1182,17 @@ class StableViewsSingleImageRenderer(object):
             * 255.0,
             "n c h w -> n h w c",
         ).astype(np.uint8)
-        second_pass_dir = osp.join(output_dir, "second_pass")
-        os.makedirs(second_pass_dir, exist_ok=True)
-        for i, img in enumerate(second_pass_samples):
-            iio.imwrite(osp.join(second_pass_dir, f"{i:04d}.png"), img)
-        second_pass_path = osp.join(output_dir, "second_pass.mp4")
-        iio.imwrite(second_pass_path, second_pass_samples, fps=30.0)
+        if data_name not in EXAMPLE_HASHES:
+            second_pass_dir = osp.join(output_dir, "second_pass")
+            os.makedirs(second_pass_dir, exist_ok=True)
+            second_pass_path = osp.join(output_dir, "second_pass.mp4")
+            iio.imwrite(second_pass_path, second_pass_samples, fps=30.0)
+            yield first_pass_path, second_pass_path
+        else:
+            second_pass_tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+            iio.imwrite(second_pass_tmp_file.name, second_pass_samples, fps=30.0)
+            yield first_pass_tmp_file.name, second_pass_tmp_file.name
 
-        yield first_pass_path, second_pass_path
 
 class StableViewsRenderer(object):
     def __init__(self, server: viser.ViserServer):
