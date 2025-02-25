@@ -24,6 +24,7 @@ from typing import Literal
 from pytorch_lightning import seed_everything
 from tqdm import tqdm
 import imageio.v3 as iio
+from PIL import Image
 
 from stableviews.eval import (
     IS_TORCH_NIGHTLY,
@@ -89,9 +90,9 @@ EXAMPLE_MAP = [
 # Precompute hash values for all example images.
 EXAMPLE_HASHES = {}
 for img_path in sorted(glob(f"{EXAMPLE_DIR}*png")):
-    with open(img_path, "rb") as f:
-        content = f.read()
-    img_hash = hashlib.sha256(content).hexdigest()[:16]
+    with Image.open(img_path) as img:
+        np_img = np.array(img)
+    img_hash = hashlib.sha256(np_img.tobytes()).hexdigest()[:16]
     EXAMPLE_HASHES[img_hash] = img_path
 
 if IS_TORCH_NIGHTLY:
