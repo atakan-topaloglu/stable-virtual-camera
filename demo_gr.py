@@ -740,7 +740,7 @@ class StableViewsSingleImageRenderer(object):
             input_imgs, K = transform_img_and_K(input_imgs, (shorter, shorter), K=input_Ks)
         else:
             input_imgs, K = transform_img_and_K(input_imgs, shorter, K=input_Ks, size_stride=64)
-        input_Ks = K / np.array([img.shape[-1], img.shape[-2], 1], dtype=np.float32)[:, None]
+        #input_Ks = K / np.array([img.shape[-1], img.shape[-2], 1], dtype=np.float32)[:, None]
 
         
         #input_imgs = transform_img_and_K(input_imgs, None, self.cfg.target_wh)[0]
