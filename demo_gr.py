@@ -65,21 +65,6 @@ device = "cuda:0"
 # Constants.
 WORK_DIR = "work_dirs/demo_gr"
 MAX_SESSIONS = 1
-HEADER = """
-<style>
-  body,
-  html {
-    margin: 0;
-    padding: 0;
-    height: 100%;
-  }
-  iframe {
-    border: 0;
-    width: 100%;
-    height: 100%;
-  }
-</style>
-"""
 EXAMPLE_DIR = "assets/demo-assets/"
 EXAMPLE_MAP = [
     (
@@ -100,6 +85,15 @@ EXAMPLE_MAP = [
         ],
     ),
 ]
+
+# Precompute hash values for all example images.
+EXAMPLE_HASHES = {}
+for img_path in sorted(glob(f"{EXAMPLE_DIR}*png")):
+    with open(img_path, "rb") as f:
+        content = f.read()
+    img_hash = hashlib.sha256(content).hexdigest()[:16]
+    EXAMPLE_HASHES[img_hash] = img_path
+
 if IS_TORCH_NIGHTLY:
     COMPILE = True
     os.environ["TORCHINDUCTOR_AUTOGRAD_CACHE"] = "1"
@@ -740,7 +734,6 @@ class StableViewsSingleImageRenderer(object):
             input_imgs, K = transform_img_and_K(input_imgs, (shorter, shorter), K=input_Ks)
         else:
             input_imgs, K = transform_img_and_K(input_imgs, shorter, K=input_Ks, size_stride=64)
-        #input_Ks = K / np.array([img.shape[-1], img.shape[-2], 1], dtype=np.float32)[:, None]
 
         
         #input_imgs = transform_img_and_K(input_imgs, None, self.cfg.target_wh)[0]
@@ -827,7 +820,16 @@ class StableViewsSingleImageRenderer(object):
         data = self.prepare(img, traj, num_targets, shorter, keep_aspect)
         data_name = hashlib.sha256(img.tobytes()).hexdigest()[:16]
 
-        output_dir = osp.join(self.cfg.output_root, data_name, f"{traj}_{num_targets}")
+        output_dir = osp.join(self.cfg.output_root, data_name, f"{traj}_{num_targets}_{shorter}_{seed}")
+
+        # If the input image is one of the examples (verified by hash) and cached videos exist, return them immediately.
+        if data_name in EXAMPLE_HASHES:
+            first_pass_path = osp.join(output_dir, "first_pass.mp4")
+            second_pass_path = osp.join(output_dir, "second_pass.mp4")
+            if os.path.exists(first_pass_path):
+                if os.path.exists(second_pass_path):
+                    yield first_pass_path, second_pass_path
+                    return
 
         #samplers = init_sampling_no_st(options=self.cfg.options)
         samplers = create_samplers(
@@ -928,7 +930,7 @@ class StableViewsSingleImageRenderer(object):
                         torch.cat(
                             [data.input_Ks, data.anchor_Ks[all_anchor_inds]], dim=0
                         ),
-                    ],  # procedually append generated prior views to the input views
+                    ],  # procedurally append generated prior views to the input views
                     [
                         repeat(
                             torch.zeros_like(data.input_imgs[:1]),
@@ -1603,75 +1605,76 @@ def get_examples(selection: gr.SelectData):
     )
 
 def main(server_port: int | None = None, share: bool = True):
-    with gr.Blocks(head=HEADER) as demo:
+    with gr.Blocks() as demo:
         # Assign the Tabs container to a variable so that we can attach a change event.
         tabs = gr.Tabs()
         with tabs:
             with gr.Tab("Basic (Single Image)"):
                 single_image_renderer = StableViewsSingleImageRenderer(StableViewsSingleImageConfig())
-                with gr.Row():
-                    gr.Markdown(
-                        """
-                    # Stable Views Single Image gradio demo
+                with gr.Row(variant="panel"):
+                    with gr.Row():
+                        gr.Markdown(
+                            """
+                        # Stable Views Single Image gradio demo
 
-                    ## Workflow
+                        ## Workflow
 
-                    1. Upload an image.
-                    2. Choose camera trajecotry and #frames, click "Render".
-                    3. Three videos will be generated: preprocessed input, intermediate output, and final output.
+                        1. Upload an image.
+                        2. Choose camera trajecotry and #frames, click "Render".
+                        3. Three videos will be generated: preprocessed input, intermediate output, and final output.
 
-                    > For a 80-frame video, intermediate output takes 20s, final output takes ~5 minutes.
-                    > Our model currently doesn't work well with human and animal images.
-                                            """
-                    )
-                with gr.Row():
-                    with gr.Column():
-                        uploaded_img = gr.Image(
-                            type="numpy", label="Upload", height=single_image_renderer.cfg.target_wh[1]
+                        > For a 80-frame video, intermediate output takes 20s, final output takes ~5 minutes.
+                        > Our model currently doesn't work well with human and animal images.
+                                                """
                         )
-                        gr.Examples(
-                            examples=sorted(glob(f"{EXAMPLE_DIR}*png")),
-                            inputs=[uploaded_img],
-                            label="Examples",
-                        )
-                        traj_handle = gr.Dropdown(
-                            choices=[
-                                "orbit",
-                                "turntable",
-                                "lemniscate",
-                                "spiral",
-                                "dolly zoom-in",
-                                "dolly zoom-out",
-                                "zoom-in",
-                                "zoom-out",
-                                "pan-forward",
-                                "pan-backward",
-                                "pan-up",
-                                "pan-down",
-                                "pan-left",
-                                "pan-right",
-                                "roll",
-                            ],
-                            label="Preset trajectory",
-                        )
-                        num_targets_handle = gr.Slider(30, 150, 80, label="#Frames")
-                        seed_handle = gr.Number(value=single_image_renderer.cfg.seed, label="Random seed")
-                        shorter = gr.Number(
-                            value=576, label="Resize", scale=3
-                        )
-                        render_btn = gr.Button("Render")
-                    with gr.Column():
-                        fast_video = gr.Video(
-                            label="Intermediate output [1/2]", autoplay=True, loop=True
-                        )
-                        slow_video = gr.Video(
-                            label="Final output [2/2]", autoplay=True, loop=True
-                        )
-                        render_btn.click(
-                            single_image_renderer.render_video,
-                            inputs=[uploaded_img, traj_handle, num_targets_handle, seed_handle, shorter],
-                            outputs=[fast_video, slow_video],
-                        )
+                    with gr.Row():
+                        with gr.Column():
+                            uploaded_img = gr.Image(
+                                type="numpy", label="Upload", height=single_image_renderer.cfg.target_wh[1]
+                            )
+                            gr.Examples(
+                                examples=sorted(glob(f"{EXAMPLE_DIR}*png")),
+                                inputs=[uploaded_img],
+                                label="Examples",
+                            )
+                            traj_handle = gr.Dropdown(
+                                choices=[
+                                    "orbit",
+                                    "turntable",
+                                    "lemniscate",
+                                    "spiral",
+                                    "dolly zoom-in",
+                                    "dolly zoom-out",
+                                    "zoom-in",
+                                    "zoom-out",
+                                    "pan-forward",
+                                    "pan-backward",
+                                    "pan-up",
+                                    "pan-down",
+                                    "pan-left",
+                                    "pan-right",
+                                    "roll",
+                                ],
+                                label="Preset trajectory",
+                            )
+                            num_targets_handle = gr.Slider(30, 150, 80, label="#Frames")
+                            seed_handle = gr.Number(value=single_image_renderer.cfg.seed, label="Random seed")
+                            shorter = gr.Number(
+                                value=576, label="Resize", scale=3
+                            )
+                            render_btn = gr.Button("Render")
+                        with gr.Column():
+                            fast_video = gr.Video(
+                                label="Intermediate output [1/2]", autoplay=True, loop=True
+                            )
+                            slow_video = gr.Video(
+                                label="Final output [2/2]", autoplay=True, loop=True
+                            )
+                            render_btn.click(
+                                single_image_renderer.render_video,
+                                inputs=[uploaded_img, traj_handle, num_targets_handle, seed_handle, shorter],
+                                outputs=[fast_video, slow_video],
+                            )
 
             with gr.Tab("Advanced"):
                 renderer = gr.State()
@@ -1778,7 +1781,6 @@ def main(server_port: int | None = None, share: bool = True):
                                 lambda r, *args: r.preprocess(*args),
                                 inputs=[renderer, input_imgs, shorter, keep_aspect],
                                 outputs=[preprocessed, preprocess_progress, chunk_strategy],
-                                show_progress_on=[preprocess_progress],
                             )
                             preprocess_btn.click(
                                 lambda: gr.update(visible=True), outputs=[preprocess_progress]
@@ -1820,7 +1822,6 @@ def main(server_port: int | None = None, share: bool = True):
                                 camera_scale,
                             ],
                             outputs=[output_video, render_progress],
-                            show_progress_on=[render_progress],
                         )
                         render_btn.click(
                             lambda: gr.update(visible=True), outputs=[render_progress]
