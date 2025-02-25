@@ -63,7 +63,7 @@ from stableviews.utils import load_model
 
 device = "cuda:0"
 
-os.environ["GRADIO_TEMP_DIR"] = os.path.join(os.environ.get("TMPDIR", "/tmp"), "gradio")
+os.environ["GRADIO_TEMP_DIR"] = os.path.join(os.environ.get("TMPDIR", "/tmp"), "gradio_stable_views")
 
 # Constants.
 WORK_DIR = "work_dirs/demo_gr"
@@ -1013,7 +1013,7 @@ class StableViewsSingleImageRenderer(object):
             "n c h w -> n h w c",
         ).astype(np.uint8)
 
-        if data_name not in EXAMPLE_HASHES:
+        if data_name in EXAMPLE_HASHES:
             first_pass_dir = osp.join(output_dir, "first_pass")
             os.makedirs(first_pass_dir, exist_ok=True)
             first_pass_path = osp.join(output_dir, "first_pass.mp4")
@@ -1182,7 +1182,7 @@ class StableViewsSingleImageRenderer(object):
             * 255.0,
             "n c h w -> n h w c",
         ).astype(np.uint8)
-        if data_name not in EXAMPLE_HASHES:
+        if data_name in EXAMPLE_HASHES:
             second_pass_dir = osp.join(output_dir, "second_pass")
             os.makedirs(second_pass_dir, exist_ok=True)
             second_pass_path = osp.join(output_dir, "second_pass.mp4")
@@ -1568,11 +1568,11 @@ def set_bkgd_color(server: viser.ViserServer | viser.ClientHandle):
 
 
 def start_server(request: gr.Request):
-    if len(SERVERS) >= MAX_SESSIONS:
-        raise gr.Error(
-            f"Maximum session count reached. Please try again later. "
-            "You can also try running our demo locally."
-        )
+    # if len(SERVERS) >= MAX_SESSIONS:
+    #     raise gr.Error(
+    #         f"Maximum session count reached. Please try again later. "
+    #         "You can also try running our demo locally."
+    #     )
     server = viser.ViserServer()
 
     @server.on_client_connect
@@ -1620,7 +1620,6 @@ def get_examples(selection: gr.SelectData):
         gr.update(visible=True),
         gr.Gallery(visible=False),
     )
-
 def main(server_port: int | None = None, share: bool = True):
     with gr.Blocks() as demo:
         # Assign the Tabs container to a variable so that we can attach a change event.
@@ -1859,6 +1858,7 @@ def main(server_port: int | None = None, share: bool = True):
             outputs=[renderer, viewport, advanced_loaded]
         )
         demo.unload(stop_server)
+        demo.queue(max_size=1)
     demo.launch(
         share=share,
         server_port=server_port,
