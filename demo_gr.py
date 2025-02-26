@@ -66,7 +66,7 @@ device = "cuda:0"
 os.environ["GRADIO_TEMP_DIR"] = os.path.join(os.environ.get("TMPDIR", "/tmp"), "gradio_stable_views")
 
 # Constants.
-WORK_DIR = "work_dirs/demo_gr"
+WORK_DIR = os.path.join(os.environ["GRADIO_TEMP_DIR"], "advanced_demo")
 MAX_SESSIONS = 1
 EXAMPLE_DIR = "assets/demo-assets/"
 EXAMPLE_MAP = [
