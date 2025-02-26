@@ -1690,6 +1690,8 @@ def main(server_port: int | None = None, share: bool = True):
                                 single_image_renderer.render_video,
                                 inputs=[uploaded_img, traj_handle, num_targets_handle, seed_handle, shorter],
                                 outputs=[fast_video, slow_video],
+                                concurrency_limit=1,
+                                concurrency_id="gpu_queue",
                             )
 
             with gr.Tab("Advanced"):
@@ -1797,9 +1799,11 @@ def main(server_port: int | None = None, share: bool = True):
                                 lambda r, *args: r.preprocess(*args),
                                 inputs=[renderer, input_imgs, shorter, keep_aspect],
                                 outputs=[preprocessed, preprocess_progress, chunk_strategy],
+                                concurrency_id="gpu_queue",
                             )
                             preprocess_btn.click(
-                                lambda: gr.update(visible=True), outputs=[preprocess_progress]
+                                lambda: gr.update(visible=True), outputs=[preprocess_progress],
+                                concurrency_id="gpu_queue",
                             )
                             preprocessed.change(
                                 lambda r, *args: r.visualize_scene(*args),
@@ -1838,9 +1842,11 @@ def main(server_port: int | None = None, share: bool = True):
                                 camera_scale,
                             ],
                             outputs=[output_video, render_progress],
+                            concurrency_id="gpu_queue",
                         )
                         render_btn.click(
-                            lambda: gr.update(visible=True), outputs=[render_progress]
+                            lambda: gr.update(visible=True), outputs=[render_progress],
+                            concurrency_id="gpu_queue",
                         )
         # Attach a callback using the tab select API (as described in https://www.gradio.app/docs/gradio/tab#tab-select)
         # to load the Advanced tab server only once when the tab is selected.
@@ -1858,7 +1864,6 @@ def main(server_port: int | None = None, share: bool = True):
             outputs=[renderer, viewport, advanced_loaded]
         )
         demo.unload(stop_server)
-        demo.queue(max_size=1)
     demo.launch(
         share=share,
         server_port=server_port,
