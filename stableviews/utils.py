@@ -1,9 +1,18 @@
 import os
+
 import safetensors.torch
 import torch
+from huggingface_hub import hf_hub_download
 
 from stableviews.model import StableViews, StableViewsParams
-from huggingface_hub import hf_hub_download
+
+
+def seed_everything(seed: int = 0):
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 
 def print_load_warning(missing: list[str], unexpected: list[str]) -> None:
@@ -18,16 +27,18 @@ def print_load_warning(missing: list[str], unexpected: list[str]) -> None:
 
 
 def load_model(
-    pretrained_model_name_or_path: str, weight_name: str,device: str | torch.device = "cuda", verbose: bool = False
+    pretrained_model_name_or_path: str,
+    weight_name: str,
+    device: str | torch.device = "cuda",
+    verbose: bool = False,
 ) -> StableViews:
-
     if os.path.isdir(pretrained_model_name_or_path):
         weight_path = os.path.join(pretrained_model_name_or_path, weight_name)
     else:
         weight_path = hf_hub_download(
             repo_id=pretrained_model_name_or_path, filename=weight_name
         )
-        config_path = hf_hub_download(
+        _ = hf_hub_download(
             repo_id=pretrained_model_name_or_path, filename="config.yaml"
         )
 

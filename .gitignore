@@ -5,6 +5,8 @@
 static/
 work_dirs/
 work_dirs
+logs/
+logs
 
 # Byte-compiled files
 __pycache__/

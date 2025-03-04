@@ -1,5 +1,4 @@
 import collections
-import copy
 import math
 import os
 import re
@@ -16,16 +15,16 @@ import torch.nn.functional as F
 import torchvision.transforms.functional as TF
 from einops import repeat
 from PIL import Image
-from pytorch_lightning import seed_everything
 from tqdm.auto import tqdm
 
-from stableviews.geometry import get_plucker_coordinates, to_hom_pose
+from stableviews.geometry import get_camera_dist, get_plucker_coordinates, to_hom_pose
 from stableviews.sampling import (
     EulerEDMSampler,
     MultiviewCFG,
     MultiviewTemporalCFG,
     VanillaCFG,
 )
+from stableviews.utils import seed_everything
 
 try:
     # Check if version string contains 'dev' or 'nightly'
@@ -34,7 +33,7 @@ try:
     torch._dynamo.config.cache_size_limit = 128  # type: ignore[assignment]
     torch._dynamo.config.accumulated_cache_size_limit = 1024  # type: ignore[assignment]
     torch._dynamo.config.force_parameter_static_shapes = False  # type: ignore[assignment]
-except:
+except Exception:
     IS_TORCH_NIGHTLY = False
 
 
@@ -765,7 +764,7 @@ def chunk_input_and_test(
 
         i = 0
         base_i = len(gt_input_inds) if "img2trajvid" in task else 0
-        chunk.append(f"!{i+base_i:03d}")
+        chunk.append(f"!{i + base_i:03d}")
         while i < len(in_stop_ranges):
             in_stop_range = in_stop_ranges[i]
             if not in_stop_range.any():
@@ -780,12 +779,12 @@ def chunk_input_and_test(
                         chunk.append(f">{j:03d}")
                 i += 1
                 if input_left:
-                    chunk.append(f"!{i+base_i:03d}")
+                    chunk.append(f"!{i + base_i:03d}")
 
             else:
                 chunk += ["NULL"] * space_left
                 chunks.append(chunk)
-                chunk = gt_chunk + [f"!{i+base_i:03d}"]
+                chunk = gt_chunk + [f"!{i + base_i:03d}"]
 
         if len(chunk) > 1:
             chunk += ["NULL"] * (T - len(chunk))
@@ -1254,7 +1253,7 @@ def run_one_scene(
                 downsample = 3
                 assert options["L_short"] % F * 2**downsample == 0, (
                     "Short side of the image should be divisible by "
-                    f"F*2**{downsample}={F*2**downsample}."
+                    f"F*2**{downsample}={F * 2**downsample}."
                 )
                 img, K = transform_img_and_K(
                     img,

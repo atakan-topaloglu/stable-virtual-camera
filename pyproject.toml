@@ -5,25 +5,20 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "stableviews"
 version = "0.0.0"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
-    "torch",
     "roma",
     "viser",
     "tyro",
     "ninja",
     "gradio",
-    "viser",
     "einops",
     "colorama",
-    "pytorch-lightning",
     "splines",
-    "diffusers",
     "kornia",
     "open-clip-torch",
-    "accelerate",
-    "numpy<2.0.0",
-    "pyav",
+    "diffusers",
+    "numpy",
     "imageio[ffmpeg]",
     "huggingface-hub"
 ]

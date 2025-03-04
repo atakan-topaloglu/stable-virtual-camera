@@ -1,15 +1,19 @@
 import copy
+import hashlib
 import os
 import os.path as osp
 import secrets
+import tempfile
 import time
+from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 from glob import glob
+from pathlib import Path
+from typing import Literal
 
 import gradio as gr
 import httpx
-import hashlib
+import imageio.v3 as iio
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -19,39 +23,33 @@ import viser.transforms as vt
 from einops import rearrange, repeat
 from gradio import networking
 from gradio.tunneling import CERTIFICATE_PATH, Tunnel
-from dataclasses import dataclass
-from typing import Literal
-from pytorch_lightning import seed_everything
-from tqdm import tqdm
-import imageio.v3 as iio
 from PIL import Image
-import tempfile
+from tqdm import tqdm
 
 from stableviews.eval import (
     IS_TORCH_NIGHTLY,
     chunk_input_and_test,
-    infer_prior_stats,
-    run_one_scene,
-    transform_img_and_K,
-    update_kv_for_dict,
-    get_unique_embedder_keys_from_conditioner,
-    get_plucker_coordinates,
-    to_hom_pose,
-    get_k_from_dict,
-    extend_dict,
+    create_samplers,
     decode_output,
     do_sample,
-    create_samplers,
+    extend_dict,
+    get_k_from_dict,
+    get_plucker_coordinates,
+    infer_prior_stats,
+    run_one_scene,
+    to_hom_pose,
+    transform_img_and_K,
+    update_kv_for_dict,
 )
 from stableviews.geometry import (
-    normalize_scene,
+    DEFAULT_FOV_RAD,
+    generate_spiral_path,
+    get_arc_horizontal_w2cs,
     get_default_intrinsics,
+    get_lemniscate_w2cs,
     get_panning_w2cs,
     get_roll_w2cs,
-    get_lemniscate_w2cs,
-    get_arc_horizontal_w2cs,
-    generate_spiral_path,
-    DEFAULT_FOV_RAD
+    normalize_scene,
 )
 from stableviews.gui import define_gui
 from stableviews.model import SGMWrapper
@@ -59,11 +57,13 @@ from stableviews.modules.autoencoder import AutoEncoder
 from stableviews.modules.conditioner import CLIPConditioner
 from stableviews.modules.preprocessor import Dust3rPipeline
 from stableviews.sampling import DDPMDiscretization, DiscreteDenoiser
-from stableviews.utils import load_model
+from stableviews.utils import load_model, seed_everything
 
 device = "cuda:0"
 
-os.environ["GRADIO_TEMP_DIR"] = os.path.join(os.environ.get("TMPDIR", "/tmp"), "gradio_stable_views")
+os.environ["GRADIO_TEMP_DIR"] = os.path.join(
+    os.environ.get("TMPDIR", "/tmp"), "gradio_stable_views"
+)
 
 # Constants.
 WORK_DIR = os.path.join(os.environ["GRADIO_TEMP_DIR"], "advanced_demo")
@@ -113,7 +113,11 @@ else:
 
 # Shared global variables across sessions.
 DUST3R = Dust3rPipeline(device=device)  # type: ignore
-MODEL = SGMWrapper(load_model("stabilityai/stableviews", "model.safetensors", device="cpu", verbose=True).eval()).to(device)
+MODEL = SGMWrapper(
+    load_model(
+        "stabilityai/stableviews", "model.safetensors", device="cpu", verbose=True
+    ).eval()
+).to(device)
 
 AE = AutoEncoder(chunk_size=1).to(device)
 CONDITIONER = CLIPConditioner().to(device)
@@ -737,16 +741,21 @@ class StableViewsSingleImageRenderer(object):
         # Has to be 64 multiple for the network.
         shorter = round(shorter / 64) * 64
         input_imgs = repeat(
-            torch.as_tensor(img / 255.0, dtype=torch.float32), "h w c -> n c h w", n=num_inputs
+            torch.as_tensor(img / 255.0, dtype=torch.float32),
+            "h w c -> n c h w",
+            n=num_inputs,
         )
         input_Ks = repeat(get_default_intrinsics(), "1 i j -> n i j", n=num_inputs)
         if not keep_aspect:
-            input_imgs, K = transform_img_and_K(input_imgs, (shorter, shorter), K=input_Ks)
+            input_imgs, K = transform_img_and_K(
+                input_imgs, (shorter, shorter), K=input_Ks
+            )
         else:
-            input_imgs, K = transform_img_and_K(input_imgs, shorter, K=input_Ks, size_stride=64)
+            input_imgs, K = transform_img_and_K(
+                input_imgs, shorter, K=input_Ks, size_stride=64
+            )
 
-        
-        #input_imgs = transform_img_and_K(input_imgs, None, self.cfg.target_wh)[0]
+        # input_imgs = transform_img_and_K(input_imgs, None, self.cfg.target_wh)[0]
         input_c2ws = repeat(torch.eye(4), "i j -> n i j", n=num_inputs)
         target_c2ws, target_Ks, camera_scale = traj_fn(
             input_c2ws[0], input_Ks[0], num_targets
@@ -830,7 +839,9 @@ class StableViewsSingleImageRenderer(object):
         data = self.prepare(img, traj, num_targets, shorter, keep_aspect)
         data_name = hashlib.sha256(img.tobytes()).hexdigest()[:16]
 
-        output_dir = osp.join(self.cfg.output_root, data_name, f"{traj}_{num_targets}_{shorter}_{seed}")
+        output_dir = osp.join(
+            self.cfg.output_root, data_name, f"{traj}_{num_targets}_{shorter}_{seed}"
+        )
 
         # If the input image is one of the examples (verified by hash) and cached videos exist, return them immediately.
         if data_name in EXAMPLE_HASHES:
@@ -841,7 +852,7 @@ class StableViewsSingleImageRenderer(object):
                     yield first_pass_path, second_pass_path
                     return
 
-        #samplers = init_sampling_no_st(options=self.cfg.options)
+        # samplers = init_sampling_no_st(options=self.cfg.options)
         samplers = create_samplers(
             self.cfg.options["guider_types"],
             DISCRETIZATION,
@@ -1000,7 +1011,11 @@ class StableViewsSingleImageRenderer(object):
                 T=self.cfg.context_window,
                 cfg=self.cfg.options["cfg"][0],
                 gradio_pbar=gradio_pbar,
-                **{k: self.cfg.options[k] for k in self.cfg.options if k not in ["cfg", "T"]},
+                **{
+                    k: self.cfg.options[k]
+                    for k in self.cfg.options
+                    if k not in ["cfg", "T"]
+                },
             )
 
             samples = decode_output(samples, self.cfg.context_window, chunk_anchor_sels)
@@ -1020,7 +1035,9 @@ class StableViewsSingleImageRenderer(object):
             iio.imwrite(first_pass_path, first_pass_samples, fps=5.0)
             yield first_pass_path, None
         else:
-            first_pass_tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+            first_pass_tmp_file = tempfile.NamedTemporaryFile(
+                delete=False, suffix=".mp4"
+            )
             iio.imwrite(first_pass_tmp_file.name, first_pass_samples, fps=5.0)
             yield first_pass_tmp_file.name, None
 
@@ -1167,7 +1184,11 @@ class StableViewsSingleImageRenderer(object):
                 T=self.cfg.context_window,
                 cfg=self.cfg.options["cfg"][1],
                 gradio_pbar=gradio_pbar,
-                **{k: self.cfg.options[k] for k in self.cfg.options if k not in ["cfg", "T"]},
+                **{
+                    k: self.cfg.options[k]
+                    for k in self.cfg.options
+                    if k not in ["cfg", "T"]
+                },
             )
             samples = decode_output(samples, self.cfg.context_window, chunk_target_sels)
             extend_dict(all_samples, samples)
@@ -1189,7 +1210,9 @@ class StableViewsSingleImageRenderer(object):
             iio.imwrite(second_pass_path, second_pass_samples, fps=30.0)
             yield first_pass_path, second_pass_path
         else:
-            second_pass_tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+            second_pass_tmp_file = tempfile.NamedTemporaryFile(
+                delete=False, suffix=".mp4"
+            )
             iio.imwrite(second_pass_tmp_file.name, second_pass_samples, fps=30.0)
             yield first_pass_tmp_file.name, second_pass_tmp_file.name
 
@@ -1232,7 +1255,9 @@ class StableViewsRenderer(object):
         )
         points = np.split(points, point_indices, 0)
         # Scale camera and points for viewport visualization.
-        scene_scale = np.concatenate([input_c2ws[:, :3, 3], *points], 0).ptp(-1).mean()
+        scene_scale = np.ptp(
+            np.concatenate([input_c2ws[:, :3, 3], *points], 0), -1
+        ).mean()
         input_c2ws[:, :3, 3] /= scene_scale
         points = [point / scene_scale for point in points]
         input_imgs = [
@@ -1463,7 +1488,7 @@ class StableViewsRenderer(object):
         chunk_strategy_first_pass = options.get(
             "chunk_strategy_first_pass", "gt-nearest"
         )
-        num_chunks_0 = len(
+        _ = len(
             chunk_input_and_test(
                 T_first_pass,
                 input_c2ws,
@@ -1484,7 +1509,7 @@ class StableViewsRenderer(object):
         traj_prior_c2ws = torch.cat([input_c2ws, anchor_c2ws], dim=0)[prior_argsort]
         T_second_pass = T[1] if isinstance(T, (list, tuple)) else T
         chunk_strategy = options.get("chunk_strategy", "nearest")
-        num_chunks_1 = len(
+        _ = len(
             chunk_input_and_test(
                 T_second_pass,
                 traj_prior_c2ws,
@@ -1620,13 +1645,17 @@ def get_examples(selection: gr.SelectData):
         gr.update(visible=True),
         gr.Gallery(visible=False),
     )
+
+
 def main(server_port: int | None = None, share: bool = True):
     with gr.Blocks() as demo:
         # Assign the Tabs container to a variable so that we can attach a change event.
         tabs = gr.Tabs()
         with tabs:
             with gr.Tab("Basic (Single Image)"):
-                single_image_renderer = StableViewsSingleImageRenderer(StableViewsSingleImageConfig())
+                single_image_renderer = StableViewsSingleImageRenderer(
+                    StableViewsSingleImageConfig()
+                )
                 with gr.Row(variant="panel"):
                     with gr.Row():
                         gr.Markdown(
@@ -1646,7 +1675,9 @@ def main(server_port: int | None = None, share: bool = True):
                     with gr.Row():
                         with gr.Column():
                             uploaded_img = gr.Image(
-                                type="numpy", label="Upload", height=single_image_renderer.cfg.target_wh[1]
+                                type="numpy",
+                                label="Upload",
+                                height=single_image_renderer.cfg.target_wh[1],
                             )
                             gr.Examples(
                                 examples=sorted(glob(f"{EXAMPLE_DIR}*png")),
@@ -1674,21 +1705,30 @@ def main(server_port: int | None = None, share: bool = True):
                                 label="Preset trajectory",
                             )
                             num_targets_handle = gr.Slider(30, 150, 80, label="#Frames")
-                            seed_handle = gr.Number(value=single_image_renderer.cfg.seed, label="Random seed")
-                            shorter = gr.Number(
-                                value=576, label="Resize", scale=3
+                            seed_handle = gr.Number(
+                                value=single_image_renderer.cfg.seed,
+                                label="Random seed",
                             )
+                            shorter = gr.Number(value=576, label="Resize", scale=3)
                             render_btn = gr.Button("Render")
                         with gr.Column():
                             fast_video = gr.Video(
-                                label="Intermediate output [1/2]", autoplay=True, loop=True
+                                label="Intermediate output [1/2]",
+                                autoplay=True,
+                                loop=True,
                             )
                             slow_video = gr.Video(
                                 label="Final output [2/2]", autoplay=True, loop=True
                             )
                             render_btn.click(
                                 single_image_renderer.render_video,
-                                inputs=[uploaded_img, traj_handle, num_targets_handle, seed_handle, shorter],
+                                inputs=[
+                                    uploaded_img,
+                                    traj_handle,
+                                    num_targets_handle,
+                                    seed_handle,
+                                    shorter,
+                                ],
                                 outputs=[fast_video, slow_video],
                                 concurrency_limit=1,
                                 concurrency_id="gpu_queue",
@@ -1707,7 +1747,9 @@ def main(server_port: int | None = None, share: bool = True):
                     outputs=[render_btn],
                 )
                 with gr.Row():
-                    gr.Markdown("**The pointcloud shown below is not used as an input to the model. It's for visualization purposes only.**")
+                    gr.Markdown(
+                        "**The pointcloud shown below is not used as an input to the model. It's for visualization purposes only.**"
+                    )
                 with gr.Row():
                     viewport = gr.HTML(container=True)
                 with gr.Row():
@@ -1746,8 +1788,12 @@ def main(server_port: int | None = None, share: bool = True):
                                 render=False,
                             )
                             with gr.Row():
-                                example_imgs_backer = gr.Button("Go back", visible=False)
-                                example_imgs_confirmer = gr.Button("Confirm", visible=False)
+                                example_imgs_backer = gr.Button(
+                                    "Go back", visible=False
+                                )
+                                example_imgs_confirmer = gr.Button(
+                                    "Confirm", visible=False
+                                )
                             example_imgs.select(
                                 get_examples,
                                 outputs=[
@@ -1798,11 +1844,16 @@ def main(server_port: int | None = None, share: bool = True):
                             preprocess_btn.click(
                                 lambda r, *args: r.preprocess(*args),
                                 inputs=[renderer, input_imgs, shorter, keep_aspect],
-                                outputs=[preprocessed, preprocess_progress, chunk_strategy],
+                                outputs=[
+                                    preprocessed,
+                                    preprocess_progress,
+                                    chunk_strategy,
+                                ],
                                 concurrency_id="gpu_queue",
                             )
                             preprocess_btn.click(
-                                lambda: gr.update(visible=True), outputs=[preprocess_progress],
+                                lambda: gr.update(visible=True),
+                                outputs=[preprocess_progress],
                                 concurrency_id="gpu_queue",
                             )
                             preprocessed.change(
@@ -1845,12 +1896,14 @@ def main(server_port: int | None = None, share: bool = True):
                             concurrency_id="gpu_queue",
                         )
                         render_btn.click(
-                            lambda: gr.update(visible=True), outputs=[render_progress],
+                            lambda: gr.update(visible=True),
+                            outputs=[render_progress],
                             concurrency_id="gpu_queue",
                         )
         # Attach a callback using the tab select API (as described in https://www.gradio.app/docs/gradio/tab#tab-select)
         # to load the Advanced tab server only once when the tab is selected.
         advanced_loaded = gr.State(value=False)
+
         def maybe_load_server(req: gr.Request, loaded, evt: gr.SelectData):
             if evt.value == "Advanced" and not loaded:
                 # Call start_server with the current request since it's triggered by tab selection.
@@ -1858,10 +1911,11 @@ def main(server_port: int | None = None, share: bool = True):
                 return renderer_obj, viewport_obj, True
             else:
                 return gr.update(), gr.update(), loaded
+
         tabs.select(
             maybe_load_server,
             inputs=[advanced_loaded],
-            outputs=[renderer, viewport, advanced_loaded]
+            outputs=[renderer, viewport, advanced_loaded],
         )
         demo.unload(stop_server)
     demo.launch(
@@ -1870,6 +1924,7 @@ def main(server_port: int | None = None, share: bool = True):
         show_error=True,
         allowed_paths=[WORK_DIR, EXAMPLE_DIR],
     )
+
 
 if __name__ == "__main__":
     tyro.cli(main)
