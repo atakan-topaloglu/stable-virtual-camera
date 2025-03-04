@@ -345,7 +345,7 @@ class EulerEDMSampler(object):
             sigma_generator = tqdm(
                 sigma_generator,
                 total=num_sigmas - 1,
-                desc=f"Sampling",
+                desc="Sampling",
                 leave=False,
             )
         return sigma_generator

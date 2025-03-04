@@ -17,12 +17,8 @@ from stableviews.sampling import (
 from stableviews.utils import load_model
 
 sys.path.insert(0, "/admin/home-hangg/projects/stable-research/")
-from sgm.modules.diffusionmodules.denoiser import (
-    DiscreteDenoiser as DiscreteDenoiserSGM,
-)
-from sgm.modules.diffusionmodules.sampling import EulerEDMSampler as EulerEDMSamplerSGM
 
-from scripts.threeD_diffusion.run_eval import init_model, seed_everything
+from scripts.threeD_diffusion.run_eval import seed_everything
 
 device = torch.device("cuda:0")
 work_dir = "work_dirs/_tests/test_check_sampling/"
@@ -186,8 +182,9 @@ sampler = EulerEDMSampler(
     s_noise=s_noise,
 )
 seed_everything(0)
-with torch.inference_mode(), torch.autocast(
-    device_type=device.type, dtype=torch.float16
+with (
+    torch.inference_mode(),
+    torch.autocast(device_type=device.type, dtype=torch.float16),
 ):
     samples_z = sampler(
         lambda input, sigma, c: denoiser(

@@ -13,7 +13,7 @@ def timestep_embedding(
     dim: int,
     max_period: int = 10000,
     repeat_only: bool = False,
-    )-> torch.Tensor:
+) -> torch.Tensor:
     if not repeat_only:
         half = dim // 2
         freqs = torch.exp(

@@ -1,9 +1,7 @@
 import sys
 
-import safetensors.torch
 import torch
 
-from stableviews._sgm_impl import _3DUNetModelWithViewAttn
 from stableviews.utils import load_model
 
 sys.path.insert(0, "/admin/home-hangg/projects/stable-research/")
@@ -18,8 +16,9 @@ version_dict, engine = init_model(
     config="/admin/home-hangg/projects/stable-research/configs/3d_diffusion/jensen/inference/sd_3d-view-attn_21FT_discrete_no-clip-txt_pl---nk_plucker_concat_norm_mv_cat3d_v3_discrete_no-clip-txt_3d-attn-with-view-attn-mixing_freeze-pretrained_5355784_ckpt600000.yaml",
 )
 model_sgm = engine.model.diffusion_model
-with torch.inference_mode(), torch.autocast(
-    device_type=device.type, dtype=torch.bfloat16
+with (
+    torch.inference_mode(),
+    torch.autocast(device_type=device.type, dtype=torch.bfloat16),
 ):
     output_sgm = model_sgm(**input_dict)
 #
@@ -85,8 +84,9 @@ with torch.inference_mode(), torch.autocast(
 #     output_sgm1 = model_sgm1(**input_dict)
 
 model = load_model(device, verbose=True).eval()
-with torch.inference_mode(), torch.autocast(
-    device_type=device.type, dtype=torch.bfloat16
+with (
+    torch.inference_mode(),
+    torch.autocast(device_type=device.type, dtype=torch.bfloat16),
 ):
     output = model(
         x=input_dict["x"],

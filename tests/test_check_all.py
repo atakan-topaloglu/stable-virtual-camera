@@ -1,7 +1,6 @@
 import copy
 import os
 import os.path as osp
-import sys
 
 import imageio.v3 as iio
 import numpy as np

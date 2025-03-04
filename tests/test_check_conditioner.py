@@ -28,8 +28,9 @@ conditioner_sgm = engine.conditioner
 #     device_type=device.type,
 #     dtype=torch.float16,  # Note that this has to be f16 to match single image script.
 # ):
-with torch.inference_mode(), torch.autocast(
-    device_type=device.type, dtype=torch.bfloat16
+with (
+    torch.inference_mode(),
+    torch.autocast(device_type=device.type, dtype=torch.bfloat16),
 ):
     batch, batch_uc = get_batch(
         get_unique_embedder_keys_from_conditioner(conditioner_sgm),
@@ -54,8 +55,9 @@ input_masks = value_dict["cond_frames_mask"]
 pluckers = value_dict["plucker_coordinate"]
 
 clip_conditioner = CLIPConditioner().to(device)
-with torch.inference_mode(), torch.autocast(
-    device_type=device.type, dtype=torch.bfloat16
+with (
+    torch.inference_mode(),
+    torch.autocast(device_type=device.type, dtype=torch.bfloat16),
 ):
     c_crossattn = clip_conditioner(imgs[input_masks]).mean(0)
     uc_crossattn = torch.zeros_like(c_crossattn)
@@ -67,8 +69,9 @@ assert torch.allclose(uc["crossattn"], uc_crossattn.float()), __import__(
 ).set_trace()
 
 ae = AutoEncoder().to(device)
-with torch.inference_mode(), torch.autocast(
-    device_type=device.type, dtype=torch.bfloat16
+with (
+    torch.inference_mode(),
+    torch.autocast(device_type=device.type, dtype=torch.bfloat16),
 ):
     input_latents = F.pad(ae.encode(imgs[input_masks]), (0, 0, 0, 0, 0, 1), value=1.0)
     c_replace = input_latents.new_zeros(T, *input_latents.shape[1:])

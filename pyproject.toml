@@ -28,3 +28,6 @@ dev = ["ruff", "ipdb", "pytest", "line_profiler", "pre-commit"]
 
 [tool.setuptools.packages.find]
 include = ["stableviews"]
+
+[tool.pyright]
+extraPaths = ["third_party/dust3r"]

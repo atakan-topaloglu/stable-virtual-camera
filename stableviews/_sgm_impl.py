@@ -6,9 +6,8 @@ from abc import abstractmethod
 from copy import deepcopy
 from functools import partial
 from inspect import isfunction
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, TypeVar, Union
+from typing import Any, Callable, Dict, Iterable, List, Optional, TypeVar, Union
 
-import numpy as np
 import torch
 import torch.nn.functional as F
 from einops import rearrange, repeat
@@ -88,7 +87,7 @@ def get_obj_from_str(
 
 
 def instantiate_from_config(config: dict) -> Any:
-    if not "target" in config:
+    if "target" not in config:
         if config == "__is_first_stage__":
             return None
         elif config == "__is_unconditional__":
