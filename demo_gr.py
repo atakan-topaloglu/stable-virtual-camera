@@ -1,109 +1,83 @@
 import copy
-import hashlib
 import os
 import os.path as osp
+import queue
 import secrets
-import tempfile
+import threading
 import time
-from dataclasses import dataclass
 from datetime import datetime
-from glob import glob
 from pathlib import Path
-from typing import Literal
 
 import gradio as gr
 import httpx
-import imageio.v3 as iio
 import numpy as np
 import torch
 import torch.nn.functional as F
 import tyro
 import viser
 import viser.transforms as vt
-from einops import rearrange, repeat
+from einops import rearrange
 from gradio import networking
+from gradio.context import LocalContext
 from gradio.tunneling import CERTIFICATE_PATH, Tunnel
-from PIL import Image
-from tqdm import tqdm
 
 from stableviews.eval import (
     IS_TORCH_NIGHTLY,
     chunk_input_and_test,
-    create_samplers,
-    decode_output,
-    do_sample,
-    extend_dict,
-    get_k_from_dict,
-    get_plucker_coordinates,
     infer_prior_stats,
     run_one_scene,
-    to_hom_pose,
     transform_img_and_K,
-    update_kv_for_dict,
 )
-from stableviews.geometry import (
-    DEFAULT_FOV_RAD,
-    generate_spiral_path,
-    get_arc_horizontal_w2cs,
-    get_default_intrinsics,
-    get_lemniscate_w2cs,
-    get_panning_w2cs,
-    get_roll_w2cs,
-    normalize_scene,
-)
+from stableviews.geometry import normalize_scene
 from stableviews.gui import define_gui
 from stableviews.model import SGMWrapper
 from stableviews.modules.autoencoder import AutoEncoder
 from stableviews.modules.conditioner import CLIPConditioner
 from stableviews.modules.preprocessor import Dust3rPipeline
 from stableviews.sampling import DDPMDiscretization, DiscreteDenoiser
-from stableviews.utils import load_model, seed_everything
+from stableviews.utils import load_model
 
 device = "cuda:0"
 
-os.environ["GRADIO_TEMP_DIR"] = os.path.join(
-    os.environ.get("TMPDIR", "/tmp"), "gradio_stable_views"
-)
 
 # Constants.
-WORK_DIR = os.path.join(os.environ["GRADIO_TEMP_DIR"], "advanced_demo")
+WORK_DIR = "work_dirs/demo_gr"
 MAX_SESSIONS = 1
-EXAMPLE_DIR = "assets/demo-assets/"
+HEADER = """
+<style>
+  body,
+  html {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+  }
+  iframe {
+    border: 0;
+    width: 100%;
+    height: 100%;
+  }
+</style>
+"""
+EXAMPLE_DIR = "/admin/home-hangg/projects/stable-research/.bak/demo-assets/"
 EXAMPLE_MAP = [
     (
-        "assets/demo-assets/nonsquare_1.png",
-        ["assets/demo-assets/nonsquare_1.png"],
+        "/admin/home-hangg/projects/stable-research/.bak/demo-assets/nonsquare_1.png",
+        ["/admin/home-hangg/projects/stable-research/.bak/demo-assets/nonsquare_1.png"],
     ),
     (
-        "assets/demo-assets/scene_1.png",
-        ["assets/demo-assets/scene_1.png"],
+        "/admin/home-hangg/projects/stable-research/.bak/demo-assets/scene_1.png",
+        ["/admin/home-hangg/projects/stable-research/.bak/demo-assets/scene_1.png"],
     ),
     (
-        "assets/demo-assets/scene_2_1.png",
+        "/admin/home-hangg/projects/stable-research/.bak/demo-assets/scene_2_1.png",
         [
-            "assets/demo-assets/scene_2_1.png",
-            "assets/demo-assets/scene_2_2.png",
-            "assets/demo-assets/scene_2_3.png",
-            "assets/demo-assets/scene_2_4.png",
+            "/admin/home-hangg/projects/stable-research/.bak/demo-assets/scene_2_1.png",
+            "/admin/home-hangg/projects/stable-research/.bak/demo-assets/scene_2_2.png",
+            "/admin/home-hangg/projects/stable-research/.bak/demo-assets/scene_2_3.png",
+            "/admin/home-hangg/projects/stable-research/.bak/demo-assets/scene_2_4.png",
         ],
     ),
 ]
-
-# Delete previous gradio temp dir folder
-if os.path.exists(os.environ["GRADIO_TEMP_DIR"]):
-    print(f"Deleting {os.environ['GRADIO_TEMP_DIR']}")
-    import shutil
-
-    shutil.rmtree(os.environ["GRADIO_TEMP_DIR"])
-
-# Precompute hash values for all example images.
-EXAMPLE_HASHES = {}
-for img_path in sorted(glob(f"{EXAMPLE_DIR}*png")):
-    with Image.open(img_path) as img:
-        np_img = np.array(img)
-    img_hash = hashlib.sha256(np_img.tobytes()).hexdigest()[:16]
-    EXAMPLE_HASHES[img_hash] = img_path
-
 if IS_TORCH_NIGHTLY:
     COMPILE = True
     os.environ["TORCHINDUCTOR_AUTOGRAD_CACHE"] = "1"
@@ -113,12 +87,9 @@ else:
 
 # Shared global variables across sessions.
 DUST3R = Dust3rPipeline(device=device)  # type: ignore
-MODEL = SGMWrapper(
-    load_model(
-        "stabilityai/stableviews", "model.safetensors", device="cpu", verbose=True
-    ).eval()
-).to(device)
-
+MODEL = SGMWrapper(load_model(device="cpu", verbose=True).eval()).to(device)
+# if COMPILE:
+#     MODEL = torch.compile(MODEL, dynamic=False)
 AE = AutoEncoder(chunk_size=1).to(device)
 CONDITIONER = CLIPConditioner().to(device)
 DISCRETIZATION = DDPMDiscretization()
@@ -132,1111 +103,40 @@ VERSION_DICT = {
     "options": {},
 }
 SERVERS = {}
+ABORT_EVENTS = {}
 
-if COMPILE:
-    MODEL = torch.compile(MODEL, dynamic=False)
-    CONDITIONER = torch.compile(CONDITIONER, dynamic=False)
-    AE = torch.compile(AE, dynamic=False)
 
-
-@dataclass
-class StableViewsSingleImageConfig:
-    context_window: int = 21
-    target_wh: tuple[int, int] = (576, 576)
-    output_root = "logs/_gradio/single_img/"
-    chunk_strategy: Literal["nearest", "interp", "interp-gt"] = "interp-gt"
-    chunk_strategy_first_pass: str = "gt_nearest"
-    seed: int = 23
-
-    def __post_init__(self):
-        self.options = {
-            "as_shuffled": True,
-            "discretization": 0,
-            "beta_linear_start": 5e-6,
-            "log_snr_shift": 2.4,
-            "guider_types": [1, 2],
-            "cfg": (3.0, 2.0),
-            "num_steps": 50,
-            "num_frames": self.context_window,
-            "encoding_t": 1,
-            "decoding_t": 1,
-        }
-
-
-@dataclass
-class StableViewsSingleImageData(object):
-    input_imgs: torch.Tensor
-    input_c2ws: torch.Tensor
-    input_Ks: torch.Tensor
-    target_c2ws: torch.Tensor
-    target_Ks: torch.Tensor
-    anchor_c2ws: torch.Tensor
-    anchor_Ks: torch.Tensor
-    num_inputs: int
-    num_targets: int
-    num_anchors: int
-    input_indices: list[int]
-    anchor_indices: list[int]
-    target_indices: list[int]
-    camera_scale: float = 2.0
-
-
-class StableViewsSingleImageRenderer(object):
-    def __init__(self, cfg: StableViewsSingleImageConfig):
-        self.cfg = cfg
-        self.engine = MODEL
-
-    def get_value_dict(
-        self,
-        curr_imgs,
-        curr_imgs_clip,
-        curr_input_frame_indices,
-        curr_c2ws,
-        curr_Ks,
-        curr_input_camera_indices,
-        curr_depths,
-        all_c2ws,
-        camera_scale=2.0,
-        as_shuffled=True,
-    ):
-        assert sorted(curr_input_camera_indices) == sorted(
-            range(len(curr_input_camera_indices))
-        )
-        H, W, T, F = curr_imgs.shape[-2], curr_imgs.shape[-1], len(curr_imgs), 8
-
-        value_dict = {}
-        value_dict["image_only_indicator"] = int(as_shuffled)
-
-        value_dict["cond_frames_without_noise"] = curr_imgs_clip[
-            curr_input_frame_indices
-        ]
-        T = len(curr_imgs)
-        value_dict["cond_frames_mask"] = torch.zeros(T, dtype=torch.bool)
-        value_dict["cond_frames_mask"][curr_input_frame_indices] = True
-        # This is only used for matching random seeding with `run_eval.py`.
-        value_dict["cond_frames"] = curr_imgs + 0.0 * torch.randn_like(curr_imgs)
-        value_dict["cond_aug"] = 0.0
-
-        c2w = to_hom_pose(curr_c2ws.float())
-        w2c = torch.linalg.inv(c2w)
-
-        # camera centering
-        ref_c2ws = all_c2ws
-        camera_dist_2med = torch.norm(
-            ref_c2ws[:, :3, 3] - ref_c2ws[:, :3, 3].median(0, keepdim=True).values,
-            dim=-1,
-        )
-        valid_mask = camera_dist_2med <= torch.clamp(
-            torch.quantile(camera_dist_2med, 0.97) * 10,
-            max=1e6,
-        )
-        c2w[:, :3, 3] -= ref_c2ws[valid_mask, :3, 3].mean(0, keepdim=True)
-        w2c = torch.linalg.inv(c2w)
-
-        # camera normalization
-        camera_dists = c2w[:, :3, 3].clone()
-        translation_scaling_factor = (
-            camera_scale
-            if torch.isclose(
-                torch.norm(camera_dists[0]), torch.zeros(1), atol=1e-6
-            ).any()
-            else (camera_scale / torch.norm(camera_dists[0]))
-        )
-        w2c[:, :3, 3] *= translation_scaling_factor
-        c2w[:, :3, 3] *= translation_scaling_factor
-        value_dict["plucker_coordinate"] = get_plucker_coordinates(
-            extrinsics_src=w2c[0],
-            extrinsics=w2c,
-            intrinsics=curr_Ks.float().clone(),
-            mode="plucker",
-            rel_zero_translation=True,
-            target_size=(H // F, W // F),
-            return_grid_cam=True,
-        )[0]
-
-        value_dict["c2w"] = c2w  # used by guider
-        value_dict["K"] = curr_Ks  # used by guider
-        value_dict["camera_mask"] = torch.zeros(T, dtype=torch.bool)
-        value_dict["camera_mask"][curr_input_camera_indices] = True
-
-        return value_dict
-
-    def pad_indices(
-        self,
-        input_indices: list[int],
-        test_indices: list[int],
-        padding_mode: Literal["first", "last", "none"] = "last",
-    ):
-        T = self.cfg.context_window
-        assert padding_mode in ["last", "none"], "`first` padding is not supported yet."
-        if padding_mode == "last":
-            padded_indices = [
-                i for i in range(T) if i not in (input_indices + test_indices)
-            ]
-        else:
-            padded_indices = []
-        input_selects = list(range(len(input_indices)))
-        test_selects = list(range(len(test_indices)))
-        if max(input_indices) > max(test_indices):
-            # last elem from input
-            input_selects += [input_selects[-1]] * len(padded_indices)
-            input_indices = input_indices + padded_indices
-            sorted_inds = np.argsort(np.array(input_indices))
-            input_indices = [input_indices[ind] for ind in sorted_inds]
-            input_selects = [input_selects[ind] for ind in sorted_inds]
-        else:
-            # last elem from test
-            test_selects += [test_selects[-1]] * len(padded_indices)
-            test_indices = test_indices + padded_indices
-            sorted_inds = np.argsort(test_indices)
-            test_indices = [test_indices[ind] for ind in sorted_inds]
-            test_selects = [test_selects[ind] for ind in sorted_inds]
-
-        if padding_mode == "last":
-            input_maps = np.array([-1] * T)
-            test_maps = np.array([-1] * T)
-        else:
-            input_maps = np.array([-1] * (len(input_indices) + len(test_indices)))
-            test_maps = np.array([-1] * (len(input_indices) + len(test_indices)))
-        input_maps[input_indices] = input_selects
-        test_maps[test_indices] = test_selects
-        return input_indices, test_indices, input_maps, test_maps
-
-    def assemble(
-        self,
-        input,
-        test,
-        input_maps,
-        test_maps,
-    ):
-        # Support padding for legacy reason, the right way is to do the
-        # attention masking.
-        T = len(input_maps)
-        assembled = torch.zeros_like(test[-1:]).repeat_interleave(T, dim=0)
-        assembled[input_maps != -1] = input[input_maps[input_maps != -1]]
-        assembled[test_maps != -1] = test[test_maps[test_maps != -1]]
-        assert np.logical_xor(input_maps != -1, test_maps != -1).all()
-        return assembled
-
-    def get_batch(
-        self,
-        keys,
-        value_dict: dict,
-        N: list[int],
-        device: str = "cuda",
-        T: int = 21,
-        additional_batch_uc_fields: list[str] = [],
-    ):
-        # Hardcoded demo setups; might undergo some changes in the future
-        batch = {}
-        batch_uc = {}
-        prod_N = np.prod(np.array(N)).item()
-
-        for key in keys:
-            if key == "txt":
-                batch["txt"] = [value_dict["prompt"]] * prod_N
-                batch_uc["txt"] = [value_dict["negative_prompt"]] * prod_N
-            elif key == "cond_aug":
-                batch[key] = repeat(
-                    torch.tensor([value_dict["cond_aug"]]).to(device),
-                    "1 -> b",
-                    b=prod_N,
-                )
-            elif (
-                key == "cond_frames"
-                or key == "cond_frames_mask"
-                or key == "cond_frames_without_noise"
-            ):
-                value = value_dict[key]
-                batch[key] = repeat(
-                    value if isinstance(value, torch.Tensor) else torch.tensor(value),
-                    "n ... -> (b n) ...",
-                    b=prod_N // T,
-                ).to(device)
-            elif (
-                key == "polar_rad"
-                or key == "azimuth_rad"
-                or key == "plucker_coordinate"
-                or key == "camera_mask"
-            ):
-                value = value_dict[key]
-                batch[key] = repeat(
-                    value if isinstance(value, torch.Tensor) else torch.tensor(value),
-                    "n ... -> (b n) ...",
-                    b=prod_N // T,
-                ).to(device)
-                # for logging as gt
-                if key == "plucker_coordinate":
-                    (
-                        batch["plucker_coordinate_direction"],
-                        batch["plucker_coordinate_moment"],
-                    ) = batch["plucker_coordinate"].chunk(2, dim=1)
-            else:
-                batch[key] = value_dict[key]
-
-        # for logging as gt
-        for key in ["depth_lowres", "depth_lowres/raw", "point"]:
-            if key in value_dict:
-                batch[key] = repeat(
-                    value_dict[key],
-                    "n ... -> (b n) ...",
-                    b=prod_N // T,
-                ).to(device)
-
-        if T is not None:
-            batch["num_video_frames"] = T
-
-        for key in batch.keys():
-            if key not in batch_uc and isinstance(batch[key], torch.Tensor):
-                batch_uc[key] = torch.clone(batch[key])
-            elif key in additional_batch_uc_fields and key not in batch_uc:
-                batch_uc[key] = copy.copy(batch[key])
-        return batch, batch_uc
-
-    def get_traj_fn(
-        self,
-        traj: Literal[
-            "orbit",
-            "turntable",
-            "lemniscate",
-            "spiral",
-            "dolly zoom-in",
-            "dolly zoom-out",
-            "zoom-in",
-            "zoom-out",
-            "pan-forward",
-            "pan-backward",
-            "pan-up",
-            "pan-down",
-            "pan-left",
-            "pan-right",
-            "roll",
-        ],
-    ):
-        if traj in ["orbit"]:
-
-            def traj_fn(
-                ref_c2w: torch.Tensor,
-                ref_K: torch.Tensor,
-                num_frames: int,
-                endpoint: bool = False,
-            ):
-                return (
-                    torch.linalg.inv(
-                        get_arc_horizontal_w2cs(
-                            torch.linalg.inv(ref_c2w),
-                            torch.tensor([0, 0, 10]),
-                            None,
-                            num_frames,
-                            endpoint=True,
-                        )
-                    )
-                    if endpoint
-                    else torch.linalg.inv(
-                        get_arc_horizontal_w2cs(
-                            torch.linalg.inv(ref_c2w),
-                            torch.tensor([0, 0, 10]),
-                            None,
-                            num_frames + 1,
-                            endpoint=False,
-                        )
-                    )[1:],
-                    repeat(ref_K, "i j -> n i j", n=num_frames),
-                    2.0,
-                )
-
-        elif traj in ["turntable"]:
-
-            def traj_fn(
-                ref_c2w: torch.Tensor,
-                ref_K: torch.Tensor,
-                num_frames: int,
-                endpoint: bool = False,
-            ):
-                return (
-                    torch.linalg.inv(
-                        get_arc_horizontal_w2cs(
-                            torch.linalg.inv(ref_c2w),
-                            torch.tensor([0, 0, -10]),
-                            None,
-                            num_frames,
-                            face_off=True,
-                            endpoint=True,
-                        )
-                    )
-                    if endpoint
-                    else torch.linalg.inv(
-                        get_arc_horizontal_w2cs(
-                            torch.linalg.inv(ref_c2w),
-                            torch.tensor([0, 0, -10]),
-                            None,
-                            num_frames + 1,
-                            face_off=True,
-                            endpoint=False,
-                        )
-                    )[1:],
-                    repeat(ref_K, "i j -> n i j", n=num_frames),
-                    0.1,
-                )
-
-        elif traj in ["lemniscate"]:
-
-            def traj_fn(
-                ref_c2w: torch.Tensor,
-                ref_K: torch.Tensor,
-                num_frames: int,
-                endpoint: bool = False,
-            ):
-                return (
-                    torch.linalg.inv(
-                        get_lemniscate_w2cs(
-                            torch.linalg.inv(ref_c2w),
-                            torch.tensor([0, 0, 10]),
-                            None,
-                            num_frames,
-                            degree=60.0,
-                            endpoint=True,
-                        )
-                    )
-                    if endpoint
-                    else torch.linalg.inv(
-                        get_lemniscate_w2cs(
-                            torch.linalg.inv(ref_c2w),
-                            torch.tensor([0, 0, 10]),
-                            None,
-                            num_frames + 1,
-                            degree=60.0,
-                            endpoint=False,
-                        )
-                    )[1:],
-                    repeat(ref_K, "i j -> n i j", n=num_frames),
-                    2.0,
-                )
-
-        elif traj in ["spiral"]:
-
-            def traj_fn(
-                ref_c2w: torch.Tensor,
-                ref_K: torch.Tensor,
-                num_frames: int,
-                endpoint: bool = False,
-            ):
-                c2ws = (
-                    generate_spiral_path(
-                        ref_c2w[None].numpy() @ np.diagflat([1, -1, -1, 1]),
-                        np.array([1, 5]),
-                        n_frames=num_frames,
-                        n_rots=2,
-                        zrate=0.5,
-                        radii=[1.0, 1.0, 0.5],
-                        endpoint=True,
-                    )
-                    if endpoint
-                    else generate_spiral_path(
-                        ref_c2w[None].numpy() @ np.diagflat([1, -1, -1, 1]),
-                        np.array([1, 5]),
-                        n_frames=num_frames + 1,
-                        n_rots=2,
-                        zrate=0.5,
-                        radii=[1.0, 1.0, 0.5],
-                        endpoint=False,
-                    )[1:]
-                )
-                c2ws = c2ws @ np.diagflat([1, -1, -1, 1])
-                c2ws = to_hom_pose(torch.as_tensor(c2ws).float())
-                # The original spiral path does not pass through the reference.
-                # So we do the relative here.
-                c2ws = ref_c2w @ torch.linalg.inv(c2ws[:1]) @ c2ws
-                return c2ws, repeat(ref_K, "i j -> n i j", n=num_frames), 2.0
-
-        elif traj in [
-            "dolly zoom-in",
-            "dolly zoom-out",
-            "zoom-in",
-            "zoom-out",
-        ]:
-
-            def traj_fn(
-                ref_c2w: torch.Tensor,
-                ref_K: torch.Tensor,
-                num_frames: int,
-                endpoint: bool = False,
-            ):
-                if traj.startswith("dolly"):
-                    direction = "backward" if traj == "dolly zoom-in" else "forward"
-                    c2ws = (
-                        torch.linalg.inv(
-                            get_panning_w2cs(
-                                torch.linalg.inv(ref_c2w),
-                                torch.tensor([0, 0, 100]),
-                                None,
-                                num_frames,
-                                endpoint=True,
-                                direction=direction,
-                            )
-                        )
-                        if endpoint
-                        else torch.linalg.inv(
-                            get_panning_w2cs(
-                                torch.linalg.inv(ref_c2w),
-                                torch.tensor([0, 0, 100]),
-                                None,
-                                num_frames + 1,
-                                endpoint=False,
-                                direction=direction,
-                            )
-                        )[1:]
-                    )
-                else:
-                    c2ws = repeat(ref_c2w, "i j -> n i j", n=num_frames)
-                # TODO(hangg): Here always assume DEFAULT_FOV_RAD, need to
-                # improve to support general case.
-                fov_rad_start = DEFAULT_FOV_RAD
-                fov_rad_end = (
-                    0.28 if traj.endswith("zoom-in") else 1.5
-                ) * DEFAULT_FOV_RAD
-                return (
-                    c2ws,
-                    torch.cat(
-                        [
-                            get_default_intrinsics(
-                                float(
-                                    fov_rad_start
-                                    + ratio * (fov_rad_end - fov_rad_start)
-                                )
-                            )
-                            for ratio in torch.linspace(
-                                0,
-                                1,
-                                num_frames + 1 - endpoint,
-                            )
-                        ],
-                        dim=0,
-                    )[1 - endpoint :],
-                    10.0,
-                )
-
-        elif traj in [
-            "pan-forward",
-            "pan-backward",
-            "pan-up",
-            "pan-down",
-            "pan-left",
-            "pan-right",
-        ]:
-
-            def traj_fn(
-                ref_c2w: torch.Tensor,
-                ref_K: torch.Tensor,
-                num_frames: int,
-                endpoint: bool = False,
-            ):
-                return (
-                    torch.linalg.inv(
-                        get_panning_w2cs(
-                            torch.eye(4),
-                            torch.tensor([0, 0, 100]),
-                            None,
-                            num_frames,
-                            endpoint=True,
-                            direction=traj.removeprefix("pan-"),
-                        )
-                    )
-                    if endpoint
-                    else torch.linalg.inv(
-                        get_panning_w2cs(
-                            torch.eye(4),
-                            torch.tensor([0, 0, 100]),
-                            None,
-                            num_frames + 1,
-                            endpoint=True,
-                            direction=traj.removeprefix("pan-"),
-                        )
-                    )[1:],
-                    repeat(ref_K, "i j -> n i j", n=num_frames),
-                    10.0,
-                )
-
-        elif "roll" in traj:
-
-            def traj_fn(
-                ref_c2w: torch.Tensor,
-                ref_K: torch.Tensor,
-                num_frames: int,
-                endpoint: bool = False,
-            ):
-                return (
-                    torch.linalg.inv(
-                        get_roll_w2cs(
-                            torch.eye(4),
-                            torch.tensor([0, 0, 10]),
-                            None,
-                            num_frames,
-                            endpoint=True,
-                        )
-                    )
-                    if endpoint
-                    else torch.linalg.inv(
-                        get_roll_w2cs(
-                            torch.eye(4),
-                            torch.tensor([0, 0, 10]),
-                            None,
-                            num_frames + 1,
-                            endpoint=True,
-                        )
-                    )[1:],
-                    repeat(ref_K, "i j -> n i j", n=num_frames),
-                    2.0,
-                )
-
-        else:
-            raise ValueError(f"Unsupported trajectory: {traj}")
-
-        return traj_fn
-
-    def prepare(
-        self,
-        img: np.ndarray,
-        traj: Literal[
-            "orbit",
-            "turntable",
-            "lemniscate",
-            "spiral",
-            "dolly zoom-in",
-            "dolly zoom-out",
-            "zoom-in",
-            "zoom-out",
-            "pan-forward",
-            "pan-backward",
-            "pan-up",
-            "pan-down",
-            "pan-left",
-            "pan-right",
-            "roll",
-        ],
-        num_targets: int = 80,
-        shorter: int = 576,
-        keep_aspect: bool = True,
-    ):
-        traj_fn = self.get_traj_fn(traj)
-
-        """
-        # Has to be 64 multiple for the network.
-        shorter = round(shorter / 64) * 64
-        for img, K in zip(input_imgs, input_Ks):
-            img = rearrange(img, "h w c -> 1 c h w")
-            if not keep_aspect:
-                img, K = transform_img_and_K(img, (shorter, shorter), K=K[None])
-            else:
-                img, K = transform_img_and_K(img, shorter, K=K[None], size_stride=64)
-            K = K / np.array([img.shape[-1], img.shape[-2], 1])[:, None]
-            new_input_imgs.append(img)
-            new_input_Ks.append(K)
-        input_imgs = torch.cat(new_input_imgs, 0)
-        input_imgs = rearrange(input_imgs, "b c h w -> b h w c")[..., :3]
-        input_Ks = torch.cat(new_input_Ks, 0)
-        """
-
-        num_inputs = 1
-        # Has to be 64 multiple for the network.
-        shorter = round(shorter / 64) * 64
-        input_imgs = repeat(
-            torch.as_tensor(img / 255.0, dtype=torch.float32),
-            "h w c -> n c h w",
-            n=num_inputs,
-        )
-        input_Ks = repeat(get_default_intrinsics(), "1 i j -> n i j", n=num_inputs)
-        if not keep_aspect:
-            input_imgs, K = transform_img_and_K(
-                input_imgs, (shorter, shorter), K=input_Ks
-            )
-        else:
-            input_imgs, K = transform_img_and_K(
-                input_imgs, shorter, K=input_Ks, size_stride=64
-            )
-
-        # input_imgs = transform_img_and_K(input_imgs, None, self.cfg.target_wh)[0]
-        input_c2ws = repeat(torch.eye(4), "i j -> n i j", n=num_inputs)
-        target_c2ws, target_Ks, camera_scale = traj_fn(
-            input_c2ws[0], input_Ks[0], num_targets
-        )
-        if self.cfg.chunk_strategy.startswith("interp"):
-            num_anchors = max(
-                np.ceil(
-                    num_targets
-                    / (
-                        self.cfg.context_window
-                        - 2
-                        - (num_inputs if self.cfg.chunk_strategy == "interp-gt" else 0)
-                    )
-                )
-                .astype(int)
-                .item()
-                + 1,
-                self.cfg.context_window - num_inputs,
-            )
-            include_start_end = True
-        else:
-            num_anchors = max(self.cfg.context_window - num_inputs, 0)
-            include_start_end = False
-        anchor_c2ws, anchor_Ks, _ = traj_fn(
-            input_c2ws[0], input_Ks[0], num_anchors, endpoint=include_start_end
-        )
-
-        # Get indices.
-        input_indices = list(range(num_inputs))
-        anchor_indices = np.linspace(
-            1,
-            num_targets,
-            num_anchors + 1 - include_start_end,
-            endpoint=include_start_end,
-        )[1 - include_start_end :].tolist()
-        target_indices = np.arange(num_inputs, num_inputs + num_targets).tolist()
-
-        return StableViewsSingleImageData(
-            input_imgs,
-            input_c2ws,
-            input_Ks,
-            target_c2ws,
-            target_Ks,
-            anchor_c2ws,
-            anchor_Ks,
-            num_inputs,
-            num_targets,
-            num_anchors,
-            input_indices,
-            anchor_indices,
-            target_indices,
-            camera_scale,
-        )
-
-    @torch.inference_mode()
-    def render_video(
-        self,
-        img: np.ndarray,
-        traj: Literal[
-            "orbit",
-            "turntable",
-            "lemniscate",
-            "spiral",
-            "dolly zoom-in",
-            "dolly zoom-out",
-            "zoom-in",
-            "zoom-out",
-            "pan-forward",
-            "pan-backward",
-            "pan-up",
-            "pan-down",
-            "pan-left",
-            "pan-right",
-            "roll",
-        ],
-        num_targets: int,
-        seed: int = 23,
-        shorter: int = 576,
-    ):
-        keep_aspect = False
-        data = self.prepare(img, traj, num_targets, shorter, keep_aspect)
-        data_name = hashlib.sha256(img.tobytes()).hexdigest()[:16]
-
-        output_dir = osp.join(
-            self.cfg.output_root, data_name, f"{traj}_{num_targets}_{shorter}_{seed}"
-        )
-
-        # If the input image is one of the examples (verified by hash) and cached videos exist, return them immediately.
-        if data_name in EXAMPLE_HASHES:
-            first_pass_path = osp.join(output_dir, "first_pass.mp4")
-            second_pass_path = osp.join(output_dir, "second_pass.mp4")
-            if os.path.exists(first_pass_path):
-                if os.path.exists(second_pass_path):
-                    yield first_pass_path, second_pass_path
-                    return
-
-        # samplers = init_sampling_no_st(options=self.cfg.options)
-        samplers = create_samplers(
-            self.cfg.options["guider_types"],
-            DISCRETIZATION,
-            [self.cfg.context_window, self.cfg.context_window],
-            self.cfg.options["num_steps"],
-        )
-
-        seed_everything(seed)
-
-        (
-            _,
-            input_inds_per_chunk,
-            input_sels_per_chunk,
-            anchor_inds_per_chunk,
-            anchor_sels_per_chunk,
-        ) = chunk_input_and_test(
-            self.cfg.context_window,
-            data.input_c2ws,
-            data.anchor_c2ws,
-            data.input_indices,
-            data.anchor_indices,
-            task="img2trajvid",
-            chunk_strategy=self.cfg.chunk_strategy_first_pass,
-            gt_input_inds=list(range(data.num_inputs)),
-            options=self.cfg.options,
-        )
-        print(
-            f"Two passes (first) - chunking with `{self.cfg.chunk_strategy_first_pass}` strategy: total "
-            f"{len(input_inds_per_chunk)} forward(s) ..."
-        )
-
-        gradio_pbar = gr.Progress(track_tqdm=True)
-
-        all_samples = {}
-        all_anchor_inds = []
-        for i, (
-            chunk_input_inds,
-            chunk_input_sels,
-            chunk_anchor_inds,
-            chunk_anchor_sels,
-        ) in tqdm(
-            enumerate(
-                zip(
-                    input_inds_per_chunk,
-                    input_sels_per_chunk,
-                    anchor_inds_per_chunk,
-                    anchor_sels_per_chunk,
-                )
-            ),
-            total=len(input_inds_per_chunk),
-            leave=False,
-        ):
-            (
-                curr_input_sels,
-                curr_anchor_sels,
-                curr_input_maps,
-                curr_anchor_maps,
-            ) = self.pad_indices(
-                chunk_input_sels,
-                chunk_anchor_sels,
-                padding_mode="last",
-            )
-            curr_imgs, curr_imgs_clip, curr_c2ws, curr_Ks, curr_depths = [
-                self.assemble(
-                    input=x[chunk_input_inds],
-                    test=y[chunk_anchor_inds],
-                    input_maps=curr_input_maps,
-                    test_maps=curr_anchor_maps,
-                )
-                for x, y in zip(
-                    [
-                        torch.cat(
-                            [
-                                data.input_imgs * 2.0 - 1.0,
-                                get_k_from_dict(all_samples, "samples-rgb").to(
-                                    data.input_imgs.device
-                                ),
-                            ],
-                            dim=0,
-                        ),
-                        torch.cat(
-                            [
-                                data.input_imgs * 2.0 - 1.0,
-                                get_k_from_dict(all_samples, "samples-rgb").to(
-                                    data.input_imgs.device
-                                ),
-                            ],
-                            dim=0,
-                        ),
-                        torch.cat(
-                            [data.input_c2ws, data.anchor_c2ws[all_anchor_inds]], dim=0
-                        ),
-                        torch.cat(
-                            [data.input_Ks, data.anchor_Ks[all_anchor_inds]], dim=0
-                        ),
-                        torch.cat(
-                            [data.input_Ks, data.anchor_Ks[all_anchor_inds]], dim=0
-                        ),
-                    ],  # procedurally append generated prior views to the input views
-                    [
-                        repeat(
-                            torch.zeros_like(data.input_imgs[:1]),
-                            "1 c h w -> n c h w",
-                            n=data.num_anchors,
-                        ),
-                        repeat(
-                            torch.zeros_like(data.input_imgs[:1]),
-                            "1 c h w -> n c h w",
-                            n=data.num_anchors,
-                        ),
-                        data.anchor_c2ws,
-                        data.anchor_Ks,
-                        data.anchor_Ks,
-                    ],
-                )
-            ]
-            value_dict = self.get_value_dict(
-                curr_imgs,
-                curr_imgs_clip,
-                curr_input_sels,
-                curr_c2ws,
-                curr_Ks,
-                list(range(self.cfg.context_window)),
-                curr_depths,
-                all_c2ws=torch.cat([data.input_c2ws, data.target_c2ws], 0),
-                as_shuffled=(
-                    self.cfg.options["as_shuffled"]
-                    and any(
-                        map(
-                            lambda x: x in self.cfg.chunk_strategy_first_pass,
-                            ["nearest", "gt"],
-                        )
-                    )  # "interp" not in chunk_strategy_first_pass
-                ),
-                camera_scale=data.camera_scale,
-            )
-
-            samples = do_sample(
-                MODEL,
-                AE,
-                CONDITIONER,
-                DENOISER,
-                (
-                    samplers[1]
-                    if len(samplers) > 1
-                    and self.cfg.options.get("ltr_first_pass", False)
-                    and self.cfg.chunk_strategy_first_pass != "gt"
-                    and i > 0
-                    else samplers[0]
-                ),
-                value_dict,
-                self.cfg.target_wh[1],
-                self.cfg.target_wh[0],
-                4,
-                8,
-                T=self.cfg.context_window,
-                cfg=self.cfg.options["cfg"][0],
-                gradio_pbar=gradio_pbar,
-                **{
-                    k: self.cfg.options[k]
-                    for k in self.cfg.options
-                    if k not in ["cfg", "T"]
-                },
-            )
-
-            samples = decode_output(samples, self.cfg.context_window, chunk_anchor_sels)
-            extend_dict(all_samples, samples)
-            all_anchor_inds.extend(chunk_anchor_inds)
-
-        first_pass_samples = rearrange(
-            (all_samples["samples-rgb/image"] / 2.0 + 0.5).clamp(0.0, 1.0).cpu().numpy()
-            * 255.0,
-            "n c h w -> n h w c",
-        ).astype(np.uint8)
-
-        if data_name in EXAMPLE_HASHES:
-            first_pass_dir = osp.join(output_dir, "first_pass")
-            os.makedirs(first_pass_dir, exist_ok=True)
-            first_pass_path = osp.join(output_dir, "first_pass.mp4")
-            iio.imwrite(first_pass_path, first_pass_samples, fps=5.0)
-            yield first_pass_path, None
-        else:
-            first_pass_tmp_file = tempfile.NamedTemporaryFile(
-                delete=False, suffix=".mp4"
-            )
-            iio.imwrite(first_pass_tmp_file.name, first_pass_samples, fps=5.0)
-            yield first_pass_tmp_file.name, None
-
-        assert (
-            data.anchor_indices is not None
-        ), "`anchor_frame_indices` needs to be set if using 2-pass sampling."
-        anchor_argsort = np.argsort(
-            np.array(data.input_indices + data.anchor_indices)
-        ).tolist()
-        anchor_indices = np.array(data.input_indices + data.anchor_indices)[
-            anchor_argsort
-        ].tolist()
-        gt_input_inds = [
-            anchor_argsort.index(i) for i in range(data.input_c2ws.shape[0])
-        ]
-
-        anchor_imgs = torch.cat(
-            [data.input_imgs, get_k_from_dict(all_samples, "samples-rgb") / 2.0 + 0.5],
-            dim=0,
-        )[anchor_argsort]
-        anchor_c2ws = torch.cat([data.input_c2ws, data.anchor_c2ws], dim=0)[
-            anchor_argsort
-        ]
-        anchor_Ks = torch.cat([data.input_Ks, data.anchor_Ks], dim=0)[anchor_argsort]
-
-        update_kv_for_dict(all_samples, "samples-rgb", anchor_imgs)
-        update_kv_for_dict(all_samples, "samples-c2ws", anchor_c2ws)
-        update_kv_for_dict(all_samples, "samples-intrinsics", anchor_Ks)
-
-        (
-            _,
-            anchor_inds_per_chunk,
-            anchor_sels_per_chunk,
-            target_inds_per_chunk,
-            target_sels_per_chunk,
-        ) = chunk_input_and_test(
-            self.cfg.context_window,
-            anchor_c2ws,
-            data.target_c2ws,
-            anchor_indices,
-            data.target_indices,
-            task="img2trajvid",
-            chunk_strategy=self.cfg.chunk_strategy,
-            gt_input_inds=gt_input_inds,
-            options=self.cfg.options,
-        )
-        print(
-            f"Two passes (second) - chunking with `{self.cfg.chunk_strategy}` strategy: total "
-            f"{len(anchor_inds_per_chunk)} forward(s) ..."
-        )
-
-        all_samples = {}
-        all_target_inds = []
-        for i, (
-            chunk_anchor_inds,
-            chunk_anchor_sels,
-            chunk_target_inds,
-            chunk_target_sels,
-        ) in tqdm(
-            enumerate(
-                zip(
-                    anchor_inds_per_chunk,
-                    anchor_sels_per_chunk,
-                    target_inds_per_chunk,
-                    target_sels_per_chunk,
-                )
-            ),
-            total=len(anchor_inds_per_chunk),
-            leave=False,
-        ):
-            (
-                curr_anchor_sels,
-                curr_target_sels,
-                curr_anchor_maps,
-                curr_target_maps,
-            ) = self.pad_indices(
-                chunk_anchor_sels,
-                chunk_target_sels,
-                padding_mode="last",
-            )
-            curr_imgs, curr_imgs_clip, curr_c2ws, curr_Ks, curr_depths = [
-                self.assemble(
-                    input=x[chunk_anchor_inds],
-                    test=y[chunk_target_inds],
-                    input_maps=curr_anchor_maps,
-                    test_maps=curr_target_maps,
-                )
-                for x, y in zip(
-                    [
-                        anchor_imgs * 2.0 - 1.0,
-                        anchor_imgs * 2.0 - 1.0,
-                        anchor_c2ws,
-                        anchor_Ks,
-                        anchor_Ks,
-                    ],
-                    [
-                        repeat(
-                            torch.zeros_like(data.input_imgs[:1]),
-                            "1 c h w -> n c h w",
-                            n=num_targets,
-                        ),
-                        repeat(
-                            torch.zeros_like(data.input_imgs[:1]),
-                            "1 c h w -> n c h w",
-                            n=num_targets,
-                        ),
-                        data.target_c2ws,
-                        data.target_Ks,
-                        data.target_Ks,
-                    ],
-                )
-            ]
-            value_dict = self.get_value_dict(
-                curr_imgs,
-                curr_imgs_clip,
-                curr_anchor_sels,
-                curr_c2ws,
-                curr_Ks,
-                list(range(self.cfg.context_window)),
-                curr_depths,
-                all_c2ws=torch.cat([data.input_c2ws, data.target_c2ws], 0),
-                as_shuffled=(
-                    self.cfg.options["as_shuffled"]
-                    and any(
-                        map(
-                            lambda x: x in self.cfg.chunk_strategy,
-                            ["nearest", "gt"],
-                        )
-                    )  # "interp" not in chunk_strategy
-                ),
-                camera_scale=data.camera_scale,
-            )
-            samples = do_sample(
-                MODEL,
-                AE,
-                CONDITIONER,
-                DENOISER,
-                samplers[1] if len(samplers) > 1 else samplers[0],
-                value_dict,
-                self.cfg.target_wh[1],
-                self.cfg.target_wh[0],
-                4,
-                8,
-                T=self.cfg.context_window,
-                cfg=self.cfg.options["cfg"][1],
-                gradio_pbar=gradio_pbar,
-                **{
-                    k: self.cfg.options[k]
-                    for k in self.cfg.options
-                    if k not in ["cfg", "T"]
-                },
-            )
-            samples = decode_output(samples, self.cfg.context_window, chunk_target_sels)
-            extend_dict(all_samples, samples)
-            all_target_inds.extend(chunk_target_inds)
-
-        all_samples = {
-            key: value[np.argsort(all_target_inds)]
-            for key, value in all_samples.items()
-        }
-        second_pass_samples = rearrange(
-            (all_samples["samples-rgb/image"] / 2.0 + 0.5).clamp(0.0, 1.0).cpu().numpy()
-            * 255.0,
-            "n c h w -> n h w c",
-        ).astype(np.uint8)
-        if data_name in EXAMPLE_HASHES:
-            second_pass_dir = osp.join(output_dir, "second_pass")
-            os.makedirs(second_pass_dir, exist_ok=True)
-            second_pass_path = osp.join(output_dir, "second_pass.mp4")
-            iio.imwrite(second_pass_path, second_pass_samples, fps=30.0)
-            yield first_pass_path, second_pass_path
-        else:
-            second_pass_tmp_file = tempfile.NamedTemporaryFile(
-                delete=False, suffix=".mp4"
-            )
-            iio.imwrite(second_pass_tmp_file.name, second_pass_samples, fps=30.0)
-            yield first_pass_tmp_file.name, second_pass_tmp_file.name
-
-
-class StableViewsRenderer(object):
+class ScenaRenderer(object):
     def __init__(self, server: viser.ViserServer):
         self.server = server
         self.gui_state = None
 
     def preprocess(
         self,
-        input_img_tuples: list[tuple[str, None]],
+        input_img_tuples: list[tuple[str, None]] | None,
+        input_data: dict | None,
         shorter: int,
         keep_aspect: bool,
     ) -> tuple[dict, dict, dict]:
-        img_paths = [p for (p, _) in input_img_tuples]
-        (
-            input_imgs,
-            input_Ks,
-            input_c2ws,
-            points,
-            point_colors,
-        ) = DUST3R.infer_cameras_and_points(img_paths)
-        num_inputs = len(img_paths)
+        if input_img_tuples is not None:
+            img_paths = [p for (p, _) in input_img_tuples]
+            (
+                input_imgs,
+                input_Ks,
+                input_c2ws,
+                points,
+                point_colors,
+            ) = DUST3R.infer_cameras_and_points(img_paths)
+            num_inputs = len(img_paths)
+        elif input_data is not None:
+            input_imgs = input_data["input_imgs"]
+            input_Ks = input_data["input_Ks"]
+            input_c2ws = input_data["input_c2ws"]
+            points = input_data["points"]
+            point_colors = input_data["point_colors"]
+            num_inputs = len(input_imgs)
+        else:
+            raise ValueError("Either input images or input data must be provided.")
         if num_inputs == 1:
             input_imgs, input_Ks, input_c2ws, points, point_colors = (
                 input_imgs[:1],
@@ -1255,9 +155,9 @@ class StableViewsRenderer(object):
         )
         points = np.split(points, point_indices, 0)
         # Scale camera and points for viewport visualization.
-        scene_scale = np.ptp(
-            np.concatenate([input_c2ws[:, :3, 3], *points], 0), -1
-        ).mean()
+        scene_scale = np.median(
+            np.ptp(np.concatenate([input_c2ws[:, :3, 3], *points], 0), -1)
+        )
         input_c2ws[:, :3, 3] /= scene_scale
         points = [point / scene_scale for point in points]
         input_imgs = [
@@ -1291,9 +191,9 @@ class StableViewsRenderer(object):
                 "scene_scale": scene_scale,
             },
             gr.update(visible=False),
-            gr.update(
-                choices=["interp-gt", "interp"] if num_inputs <= 10 else ["interp"]
-            ),
+            gr.update()
+            if num_inputs <= 10
+            else gr.update(choices=["interp"], value="interp"),
         )
 
     def visualize_scene(self, preprocessed: dict):
@@ -1333,11 +233,7 @@ class StableViewsRenderer(object):
             init_fov = 2 * np.arctan(1 / (2 * input_Ks[0, 1, 1].item()))
         init_fov_deg = float(init_fov / np.pi * 180.0)
 
-        frustrums = []
-        input_camera_node_prefix = "/scene_assets/cameras/"
-        input_camera_node = server.scene.add_frame(
-            input_camera_node_prefix, show_axes=False
-        )
+        frustum_nodes, pcd_nodes = [], []
         for i in range(len(input_imgs)):
             K = input_Ks[i]
             frustum = server.scene.add_camera_frustum(
@@ -1371,41 +267,49 @@ class StableViewsRenderer(object):
                 return handler
 
             frustum.on_click(get_handler(frustum))  # type: ignore
-            frustrums.append(frustum)
+            frustum_nodes.append(frustum)
 
-            server.scene.add_point_cloud(
+            pcd = server.scene.add_point_cloud(
                 f"/scene_assets/points/{i}",
                 points[i],
                 point_colors[i],
                 point_size=0.01 * scene_scale,
                 point_shape="circle",
             )
+            pcd_nodes.append(pcd)
+
+        with server.gui.add_folder("Scene scale", expand_by_default=False, order=200):
+            camera_scale_slider = server.gui.add_slider(
+                "Log camera scale", initial_value=0.0, min=-2.0, max=2.0, step=0.1
+            )
+
+            @camera_scale_slider.on_update
+            def _(_) -> None:
+                for i in range(len(frustum_nodes)):
+                    frustum_nodes[i].scale = (
+                        0.1 * scene_scale * 10**camera_scale_slider.value
+                    )
+
+            point_scale_slider = server.gui.add_slider(
+                "Log point scale", initial_value=0.0, min=-2.0, max=2.0, step=0.1
+            )
+
+            @point_scale_slider.on_update
+            def _(_) -> None:
+                for i in range(len(pcd_nodes)):
+                    pcd_nodes[i].point_size = (
+                        0.01 * scene_scale * 10**point_scale_slider.value
+                    )
 
         self.gui_state = define_gui(
             server,
             init_fov=init_fov_deg,
             img_wh=input_wh,
-            input_camera_node_list=[input_camera_node],
             scene_scale=scene_scale,
         )
 
-    def render(
-        self,
-        preprocessed: dict,
-        seed: int,
-        chunk_strategy: str,
-        cfg: float,
-        camera_scale: float,
-    ):
-        render_name = datetime.now().strftime("%Y%m%d_%H%M%S")
-        render_dir = osp.join(WORK_DIR, render_name)
-
-        input_imgs, input_Ks, input_c2ws, input_wh = (
-            preprocessed["input_imgs"],
-            preprocessed["input_Ks"],
-            preprocessed["input_c2ws"],
-            preprocessed["input_wh"],
-        )
+    def get_target_c2ws_and_Ks(self, preprocessed: dict):
+        input_wh = preprocessed["input_wh"]
         W, H = input_wh
         gui_state = self.gui_state
         assert gui_state is not None and gui_state.camera_traj_list is not None
@@ -1419,6 +323,27 @@ class StableViewsRenderer(object):
             np.linalg.inv(np.array(target_c2ws).reshape(-1, 4, 4))
         )
         target_Ks = torch.as_tensor(np.array(target_Ks).reshape(-1, 3, 3))
+        return target_c2ws, target_Ks
+
+    def render(
+        self,
+        preprocessed: dict,
+        session_hash: str,
+        seed: int,
+        chunk_strategy: str,
+        cfg: float,
+        camera_scale: float,
+    ):
+        render_name = datetime.now().strftime("%Y%m%d_%H%M%S")
+        render_dir = osp.join(WORK_DIR, render_name)
+
+        input_imgs, input_Ks, input_c2ws, (W, H) = (
+            preprocessed["input_imgs"],
+            preprocessed["input_Ks"],
+            preprocessed["input_c2ws"],
+            preprocessed["input_wh"],
+        )
+        target_c2ws, target_Ks = self.get_target_c2ws_and_Ks(preprocessed)
         num_inputs = len(input_imgs)
         num_targets = len(target_c2ws)
         input_indices = list(range(num_inputs))
@@ -1482,13 +407,18 @@ class StableViewsRenderer(object):
         options["num_steps"] = num_steps
         options["encoding_t"] = 1
         options["decoding_t"] = 1
+        assert session_hash in ABORT_EVENTS
+        abort_event = ABORT_EVENTS[session_hash]
+        abort_event.clear()
+        options["sampler"] = 1
+        options["abort_event"] = abort_event
         task = "img2trajvid"
         # Get number of first pass chunks.
         T_first_pass = T[0] if isinstance(T, (list, tuple)) else T
         chunk_strategy_first_pass = options.get(
             "chunk_strategy_first_pass", "gt-nearest"
         )
-        _ = len(
+        num_chunks_0 = len(
             chunk_input_and_test(
                 T_first_pass,
                 input_c2ws,
@@ -1509,7 +439,7 @@ class StableViewsRenderer(object):
         traj_prior_c2ws = torch.cat([input_c2ws, anchor_c2ws], dim=0)[prior_argsort]
         T_second_pass = T[1] if isinstance(T, (list, tuple)) else T
         chunk_strategy = options.get("chunk_strategy", "nearest")
-        _ = len(
+        num_chunks_1 = len(
             chunk_input_and_test(
                 T_second_pass,
                 traj_prior_c2ws,
@@ -1522,8 +452,16 @@ class StableViewsRenderer(object):
                 gt_input_inds=gt_input_inds,
             )[1]
         )
-
-        pbar = gr.Progress(track_tqdm=True)
+        second_pass_pbar = gr.Progress().tqdm(
+            iterable=None,
+            desc="Second pass sampling",
+            total=num_chunks_1 * num_steps,
+        )
+        first_pass_pbar = gr.Progress().tqdm(
+            iterable=None,
+            desc="First pass sampling",
+            total=num_chunks_0 * num_steps,
+        )
         video_path_generator = run_one_scene(
             task=task,
             version_dict={
@@ -1546,15 +484,39 @@ class StableViewsRenderer(object):
             traj_prior_Ks=anchor_Ks,
             seed=seed,
             gradio=True,
-            gradio_pbar=pbar,
+            first_pass_pbar=first_pass_pbar,
+            second_pass_pbar=second_pass_pbar,
         )
-        for i, video_path in enumerate(video_path_generator):
-            if i == 0:
-                yield video_path, gr.update()
-            elif i == 1:
-                yield video_path, gr.update(visible=False)
-            else:
-                gr.Error("More than two passes during rendering.")
+        output_queue = queue.Queue()
+
+        blocks = LocalContext.blocks.get()
+        event_id = LocalContext.event_id.get()
+
+        def worker():
+            # gradio doesn't support threading with progress intentionally, so
+            # we need to hack this.
+            LocalContext.blocks.set(blocks)
+            LocalContext.event_id.set(event_id)
+            for i, video_path in enumerate(video_path_generator):
+                if i == 0:
+                    output_queue.put((video_path, gr.update(), gr.update()))
+                elif i == 1:
+                    output_queue.put(
+                        (video_path, gr.update(visible=False), gr.update(visible=False))
+                    )
+                else:
+                    gr.Error("More than two passes during rendering.")
+
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+
+        while thread.is_alive() or not output_queue.empty():
+            if abort_event.is_set():
+                thread.join()
+                yield gr.update(), gr.update(visible=False), gr.update(visible=False)
+            time.sleep(0.1)
+            while not output_queue.empty():
+                yield output_queue.get()
 
 
 # This is basically a copy of the original `networking.setup_tunnel` function,
@@ -1592,12 +554,12 @@ def set_bkgd_color(server: viser.ViserServer | viser.ClientHandle):
     server.scene.set_background_image(np.array([[[39, 39, 42]]], dtype=np.uint8))
 
 
-def start_server(request: gr.Request):
-    # if len(SERVERS) >= MAX_SESSIONS:
-    #     raise gr.Error(
-    #         f"Maximum session count reached. Please try again later. "
-    #         "You can also try running our demo locally."
-    #     )
+def start_server_and_abort_event(request: gr.Request):
+    if len(SERVERS) >= MAX_SESSIONS:
+        raise gr.Error(
+            f"Maximum session ({MAX_SESSIONS}) reached. Please try again later. "
+            "You can also try running our demo locally."
+        )
     server = viser.ViserServer()
 
     @server.on_client_connect
@@ -1623,18 +585,32 @@ def start_server(request: gr.Request):
         )
     # Give it enough time to start.
     time.sleep(1)
-    return StableViewsRenderer(server), gr.HTML(
-        f'<iframe src="{server_url}" style="display: block; margin: auto; width: 100%; height: 60vh; overflow: scroll;" frameborder="0"></iframe>',
-        container=True,
+
+    ABORT_EVENTS[request.session_hash] = threading.Event()
+
+    return (
+        ScenaRenderer(server),
+        gr.HTML(
+            f'<iframe src="{server_url}" style="display: block; margin: auto; width: 100%; height: 60vh;" frameborder="0"></iframe>',
+            container=True,
+        ),
+        request.session_hash,
     )
 
 
 def stop_server(request: gr.Request):
     if request.session_hash in SERVERS:
+        print(f"Stopping server {request.session_hash}")
         server, tunnel = SERVERS.pop(request.session_hash)
-        print(f"Stopping server {server.get_port()}")
         server.stop()
         tunnel.kill()
+
+
+def set_abort_event(request: gr.Request):
+    if request.session_hash in ABORT_EVENTS:
+        print(f"Setting abort event {request.session_hash}")
+        gr.Info("Aborting the rendering process...", duration=3)
+        ABORT_EVENTS[request.session_hash].set()
 
 
 def get_examples(selection: gr.SelectData):
@@ -1648,277 +624,194 @@ def get_examples(selection: gr.SelectData):
 
 
 def main(server_port: int | None = None, share: bool = True):
-    with gr.Blocks() as demo:
-        # Assign the Tabs container to a variable so that we can attach a change event.
-        tabs = gr.Tabs()
-        with tabs:
-            with gr.Tab("Basic (Single Image)"):
-                single_image_renderer = StableViewsSingleImageRenderer(
-                    StableViewsSingleImageConfig()
-                )
-                with gr.Row(variant="panel"):
+    with gr.Blocks(head=HEADER) as app:
+        renderer = gr.State()
+        session_hash = gr.State()
+        input_data = gr.State()
+        render_btn = gr.Button("Render video", interactive=False, render=False)
+        gr.Timer(0.1).tick(
+            lambda renderer: gr.update(
+                interactive=renderer is not None
+                and renderer.gui_state is not None
+                and renderer.gui_state.camera_traj_list is not None
+            ),
+            inputs=[renderer],
+            outputs=[render_btn],
+        )
+        with gr.Row():
+            viewport = gr.HTML(container=True)
+        with gr.Row():
+            with gr.Column():
+                with gr.Group():
+                    preprocess_btn = gr.Button("Preprocess images")
+                    preprocess_progress = gr.Textbox(
+                        label="",
+                        visible=False,
+                        interactive=False,
+                    )
+                with gr.Group():
+                    input_imgs = gr.Gallery(
+                        interactive=True,
+                        label="Input",
+                        columns=4,
+                        height=200,
+                    )
+                    # Define example images (gradio doesn't support variable length
+                    # examples so we need to hack it).
+                    example_imgs = gr.Gallery(
+                        [e[0] for e in EXAMPLE_MAP],
+                        allow_preview=False,
+                        preview=False,
+                        label="Example",
+                        columns=20,
+                        rows=1,
+                        height=115,
+                    )
+                    example_imgs_expander = gr.Gallery(
+                        visible=False,
+                        interactive=False,
+                        label="Example",
+                        preview=True,
+                        columns=20,
+                        rows=1,
+                    )
+                    chunk_strategy = gr.Dropdown(
+                        ["interp-gt", "interp"],
+                        label="Chunk strategy",
+                        render=False,
+                    )
                     with gr.Row():
-                        gr.Markdown(
-                            """
-                        # Stable Views Single Image gradio demo
-
-                        ## Workflow
-
-                        1. Upload an image.
-                        2. Choose camera trajecotry and #frames, click "Render".
-                        3. Three videos will be generated: preprocessed input, intermediate output, and final output.
-
-                        > For a 80-frame video, intermediate output takes 20s, final output takes ~5 minutes.
-                        > Our model currently doesn't work well with human and animal images.
-                                                """
-                        )
-                    with gr.Row():
-                        with gr.Column():
-                            uploaded_img = gr.Image(
-                                type="numpy",
-                                label="Upload",
-                                height=single_image_renderer.cfg.target_wh[1],
-                            )
-                            gr.Examples(
-                                examples=sorted(glob(f"{EXAMPLE_DIR}*png")),
-                                inputs=[uploaded_img],
-                                label="Examples",
-                            )
-                            traj_handle = gr.Dropdown(
-                                choices=[
-                                    "orbit",
-                                    "turntable",
-                                    "lemniscate",
-                                    "spiral",
-                                    "dolly zoom-in",
-                                    "dolly zoom-out",
-                                    "zoom-in",
-                                    "zoom-out",
-                                    "pan-forward",
-                                    "pan-backward",
-                                    "pan-up",
-                                    "pan-down",
-                                    "pan-left",
-                                    "pan-right",
-                                    "roll",
-                                ],
-                                label="Preset trajectory",
-                            )
-                            num_targets_handle = gr.Slider(30, 150, 80, label="#Frames")
-                            seed_handle = gr.Number(
-                                value=single_image_renderer.cfg.seed,
-                                label="Random seed",
-                            )
-                            shorter = gr.Number(value=576, label="Resize", scale=3)
-                            render_btn = gr.Button("Render")
-                        with gr.Column():
-                            fast_video = gr.Video(
-                                label="Intermediate output [1/2]",
-                                autoplay=True,
-                                loop=True,
-                            )
-                            slow_video = gr.Video(
-                                label="Final output [2/2]", autoplay=True, loop=True
-                            )
-                            render_btn.click(
-                                single_image_renderer.render_video,
-                                inputs=[
-                                    uploaded_img,
-                                    traj_handle,
-                                    num_targets_handle,
-                                    seed_handle,
-                                    shorter,
-                                ],
-                                outputs=[fast_video, slow_video],
-                                concurrency_limit=1,
-                                concurrency_id="gpu_queue",
-                            )
-
-            with gr.Tab("Advanced"):
-                renderer = gr.State()
-                render_btn = gr.Button("Render video", interactive=False, render=False)
-                gr.Timer(0.1).tick(
-                    lambda renderer: gr.update(
-                        interactive=renderer is not None
-                        and renderer.gui_state is not None
-                        and renderer.gui_state.camera_traj_list is not None
-                    ),
-                    inputs=[renderer],
-                    outputs=[render_btn],
-                )
-                with gr.Row():
-                    gr.Markdown(
-                        "**The pointcloud shown below is not used as an input to the model. It's for visualization purposes only.**"
+                        example_imgs_backer = gr.Button("Go back", visible=False)
+                        example_imgs_confirmer = gr.Button("Confirm", visible=False)
+                    example_imgs.select(
+                        get_examples,
+                        outputs=[
+                            example_imgs_expander,
+                            example_imgs_confirmer,
+                            example_imgs_backer,
+                            example_imgs,
+                        ],
+                    )
+                    example_imgs_confirmer.click(
+                        lambda x: (
+                            x,
+                            gr.update(visible=False),
+                            gr.update(visible=False),
+                            gr.update(visible=False),
+                            gr.update(visible=True),
+                        ),
+                        inputs=[example_imgs_expander],
+                        outputs=[
+                            input_imgs,
+                            example_imgs_expander,
+                            example_imgs_confirmer,
+                            example_imgs_backer,
+                            example_imgs,
+                        ],
+                    )
+                    example_imgs_backer.click(
+                        lambda: (
+                            gr.update(visible=False),
+                            gr.update(visible=False),
+                            gr.update(visible=False),
+                            gr.update(visible=True),
+                        ),
+                        outputs=[
+                            example_imgs_expander,
+                            example_imgs_confirmer,
+                            example_imgs_backer,
+                            example_imgs,
+                        ],
+                    )
+                    preprocessed = gr.State()
+                    shorter = gr.Number(
+                        value=576, label="Resize", render=False, scale=3
+                    )
+                    keep_aspect = gr.Checkbox(
+                        True, label="Keep aspect ratio", render=False, scale=1
+                    )
+                    preprocess_btn.click(
+                        lambda r, *args: r.preprocess(*args),
+                        inputs=[renderer, input_imgs, input_data, shorter, keep_aspect],
+                        outputs=[preprocessed, preprocess_progress, chunk_strategy],
+                        show_progress_on=[preprocess_progress],
+                    )
+                    preprocess_btn.click(
+                        lambda: gr.update(visible=True), outputs=[preprocess_progress]
+                    )
+                    preprocessed.change(
+                        lambda r, *args: r.visualize_scene(*args),
+                        inputs=[renderer, preprocessed],
                     )
                 with gr.Row():
-                    viewport = gr.HTML(container=True)
+                    shorter.render()
+                    keep_aspect.render()
                 with gr.Row():
-                    with gr.Column():
-                        with gr.Group():
-                            preprocess_btn = gr.Button("Preprocess images")
-                            preprocess_progress = gr.Textbox(
-                                label="",
-                                visible=False,
-                                interactive=False,
-                            )
-                        with gr.Group():
-                            input_imgs = gr.Gallery(interactive=True, label="Input")
-                            # Define example images (gradio doesn't support variable length
-                            # examples so we need to hack it).
-                            example_imgs = gr.Gallery(
-                                [e[0] for e in EXAMPLE_MAP],
-                                allow_preview=False,
-                                preview=False,
-                                label="Example",
-                                columns=20,
-                                rows=1,
-                                height=115,
-                            )
-                            example_imgs_expander = gr.Gallery(
-                                visible=False,
-                                interactive=False,
-                                label="Example",
-                                preview=True,
-                                columns=20,
-                                rows=1,
-                            )
-                            chunk_strategy = gr.Dropdown(
-                                ["interp-gt", "interp"],
-                                label="Chunk strategy",
-                                render=False,
-                            )
-                            with gr.Row():
-                                example_imgs_backer = gr.Button(
-                                    "Go back", visible=False
-                                )
-                                example_imgs_confirmer = gr.Button(
-                                    "Confirm", visible=False
-                                )
-                            example_imgs.select(
-                                get_examples,
-                                outputs=[
-                                    example_imgs_expander,
-                                    example_imgs_confirmer,
-                                    example_imgs_backer,
-                                    example_imgs,
-                                ],
-                            )
-                            example_imgs_confirmer.click(
-                                lambda x: (
-                                    x,
-                                    gr.update(visible=False),
-                                    gr.update(visible=False),
-                                    gr.update(visible=False),
-                                    gr.update(visible=True),
-                                ),
-                                inputs=[example_imgs_expander],
-                                outputs=[
-                                    input_imgs,
-                                    example_imgs_expander,
-                                    example_imgs_confirmer,
-                                    example_imgs_backer,
-                                    example_imgs,
-                                ],
-                            )
-                            example_imgs_backer.click(
-                                lambda: (
-                                    gr.update(visible=False),
-                                    gr.update(visible=False),
-                                    gr.update(visible=False),
-                                    gr.update(visible=True),
-                                ),
-                                outputs=[
-                                    example_imgs_expander,
-                                    example_imgs_confirmer,
-                                    example_imgs_backer,
-                                    example_imgs,
-                                ],
-                            )
-                            preprocessed = gr.State()
-                            shorter = gr.Number(
-                                value=576, label="Resize", render=False, scale=3
-                            )
-                            keep_aspect = gr.Checkbox(
-                                True, label="Keep aspect ratio", render=False, scale=1
-                            )
-                            preprocess_btn.click(
-                                lambda r, *args: r.preprocess(*args),
-                                inputs=[renderer, input_imgs, shorter, keep_aspect],
-                                outputs=[
-                                    preprocessed,
-                                    preprocess_progress,
-                                    chunk_strategy,
-                                ],
-                                concurrency_id="gpu_queue",
-                            )
-                            preprocess_btn.click(
-                                lambda: gr.update(visible=True),
-                                outputs=[preprocess_progress],
-                                concurrency_id="gpu_queue",
-                            )
-                            preprocessed.change(
-                                lambda r, *args: r.visualize_scene(*args),
-                                inputs=[renderer, preprocessed],
-                            )
-                        with gr.Row():
-                            shorter.render()
-                            keep_aspect.render()
-                        with gr.Row():
-                            seed = gr.Number(value=23, label="Random seed")
-                            chunk_strategy.render()
-                            cfg = gr.Slider(2.0, 10.0, value=3.0, label="CFG value")
-                        camera_scale = gr.Slider(
-                            0.1,
-                            10.0,
-                            value=2.0,
-                            label="Camera scale (useful for single image case)",
-                        )
-                    with gr.Column():
-                        with gr.Group():
-                            render_btn.render()
-                            render_progress = gr.Textbox(
-                                label="", visible=False, interactive=False
-                            )
-                        output_video = gr.Video(
-                            label="Output", interactive=False, autoplay=True, loop=True
-                        )
-                        render_btn.click(
-                            lambda r, *args: (yield from r.render(*args)),
-                            inputs=[
-                                renderer,
-                                preprocessed,
-                                seed,
-                                chunk_strategy,
-                                cfg,
-                                camera_scale,
-                            ],
-                            outputs=[output_video, render_progress],
-                            concurrency_id="gpu_queue",
-                        )
-                        render_btn.click(
-                            lambda: gr.update(visible=True),
-                            outputs=[render_progress],
-                            concurrency_id="gpu_queue",
-                        )
-        # Attach a callback using the tab select API (as described in https://www.gradio.app/docs/gradio/tab#tab-select)
-        # to load the Advanced tab server only once when the tab is selected.
-        advanced_loaded = gr.State(value=False)
+                    seed = gr.Number(value=23, label="Random seed")
+                    chunk_strategy.render()
+                    cfg = gr.Slider(2.0, 10.0, value=3.0, label="CFG value")
+                camera_scale = gr.Slider(
+                    0.1,
+                    10.0,
+                    value=2.0,
+                    label="Camera scale (useful for single image case)",
+                )
+                with gr.Group():
+                    input_data_path = gr.Textbox(label="Input data path")
+                    input_data_btn = gr.Button("Load input data")
+                    output_data_dir = gr.Textbox(label="Output data directory")
+                    output_data_btn = gr.Button("Export output data")
 
-        def maybe_load_server(req: gr.Request, loaded, evt: gr.SelectData):
-            if evt.value == "Advanced" and not loaded:
-                # Call start_server with the current request since it's triggered by tab selection.
-                renderer_obj, viewport_obj = start_server(req)
-                return renderer_obj, viewport_obj, True
-            else:
-                return gr.update(), gr.update(), loaded
+                def load_with_info(p):
+                    gr.Info(f"Loading input data from {p}...", duration=3)
+                    return np.load(p, allow_pickle=True).item()
 
-        tabs.select(
-            maybe_load_server,
-            inputs=[advanced_loaded],
-            outputs=[renderer, viewport, advanced_loaded],
+                input_data_btn.click(
+                    lambda p: load_with_info(p),
+                    inputs=[input_data_path],
+                    outputs=[input_data],
+                )
+                output_data_btn.click(
+                    lambda r, *args: r.export_output_data(*args),
+                    inputs=[renderer, preprocessed, output_data_dir],
+                )
+            with gr.Column():
+                with gr.Group():
+                    with gr.Row():
+                        abort_btn = gr.Button("Abort", visible=False)
+                        render_btn.render()
+                    render_progress = gr.Textbox(
+                        label="", visible=False, interactive=False
+                    )
+                output_video = gr.Video(
+                    label="Output", interactive=False, autoplay=True, loop=True
+                )
+                render_btn.click(
+                    lambda r, *args: (yield from r.render(*args)),
+                    inputs=[
+                        renderer,
+                        preprocessed,
+                        session_hash,
+                        seed,
+                        chunk_strategy,
+                        cfg,
+                        camera_scale,
+                    ],
+                    outputs=[output_video, abort_btn, render_progress],
+                    show_progress_on=[render_progress],
+                )
+                render_btn.click(
+                    lambda: (gr.update(visible=True), gr.update(visible=True)),
+                    outputs=[abort_btn, render_progress],
+                )
+                abort_btn.click(set_abort_event)
+        # Register the session initialization and cleanup functions.
+        app.load(
+            start_server_and_abort_event, outputs=[renderer, viewport, session_hash]
         )
-        demo.unload(stop_server)
-    demo.launch(
+        app.unload(stop_server)
+
+    app.launch(
         share=share,
         server_port=server_port,
         show_error=True,

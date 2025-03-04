@@ -519,8 +519,6 @@ def define_gui(
     server: viser.ViserServer,
     init_fov: float = 75.0,
     img_wh: tuple[int, int] = (576, 576),
-    input_camera_node_list: list[viser.FrameHandle] | None = None,
-    preset_paths: dict[str, np.ndarray] | None = None,
     **kwargs,
 ) -> GuiState:
     gui_state = GuiState(
@@ -531,7 +529,9 @@ def define_gui(
         active_input_index=0,
     )
 
-    with server.gui.add_folder("Preset camera trajectories", order=99):
+    with server.gui.add_folder(
+        "Preset camera trajectories", order=99, expand_by_default=False
+    ):
         preset_traj_dropdown = server.gui.add_dropdown(
             "Options",
             [
@@ -884,8 +884,6 @@ def define_gui(
         # Hide all render assets when we're previewing the render.
         nonlocal base_scene_node
         base_scene_node.visible = False
-        if input_camera_node_list is not None:
-            input_camera_node_list[0].visible = False
 
         # Back up and then set camera poses.
         for client in server.get_clients().values():
@@ -922,8 +920,6 @@ def define_gui(
         # Un-hide render assets.
         nonlocal base_scene_node
         base_scene_node.visible = True
-        if input_camera_node_list is not None:
-            input_camera_node_list[0].visible = True
         remove_preview_camera()
 
     @preview_render_stop_button.on_click

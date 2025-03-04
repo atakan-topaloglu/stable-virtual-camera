@@ -2,8 +2,10 @@ import collections
 import math
 import os
 import re
+import threading
 from typing import List, Literal, Optional, Tuple, Union
 
+import gradio as gr
 from colorama import Fore, Style, init
 
 init(autoreset=True)
@@ -993,12 +995,68 @@ def save_output(
             pass
 
 
+class GradioTrackedSampler(EulerEDMSampler):
+    """
+    A thin wrapper around the EulerEDMSampler that allows tracking progress and
+    aborting sampling for gradio demo.
+    """
+
+    def __init__(self, abort_event: threading.Event, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.abort_event = abort_event
+
+    def __call__(
+        self,
+        denoiser,
+        x: torch.Tensor,
+        scale: float | torch.Tensor,
+        cond: dict,
+        uc: dict | None = None,
+        num_steps: int | None = None,
+        verbose: bool = True,
+        global_pbar: gr.Progress | None = None,
+        **guider_kwargs,
+    ) -> torch.Tensor:
+        uc = cond if uc is None else uc
+        x, s_in, sigmas, num_sigmas, cond, uc = self.prepare_sampling_loop(
+            x,
+            cond,
+            uc,
+            num_steps,
+        )
+        for i in self.get_sigma_gen(num_sigmas, verbose=verbose):
+            gamma = (
+                min(self.s_churn / (num_sigmas - 1), 2**0.5 - 1)
+                if self.s_tmin <= sigmas[i] <= self.s_tmax
+                else 0.0
+            )
+            x = self.sampler_step(
+                s_in * sigmas[i],
+                s_in * sigmas[i + 1],
+                denoiser,
+                x,
+                scale,
+                cond,
+                uc,
+                gamma,
+                **guider_kwargs,
+            )
+            # Allow tracking progress in gradio demo.
+            if global_pbar is not None:
+                global_pbar.update()
+            # Allow aborting sampling in gradio demo.
+            if self.abort_event.is_set():
+                break
+        return x
+
+
 def create_samplers(
     guider_types: list[int],
     discretization,
     num_frames: list[int] | None,
     num_steps: int,
     device: str | torch.device = "cuda",
+    abort_event: threading.Event | None = None,
 ):
     guider_mapping = {
         0: VanillaCFG,
@@ -1017,17 +1075,31 @@ def create_samplers(
         else:
             assert num_frames is not None
             guider = guider_cls(num_frames[i])
-        sampler = EulerEDMSampler(
-            discretization=discretization,
-            guider=guider,
-            num_steps=num_steps,
-            s_churn=0.0,
-            s_tmin=0.0,
-            s_tmax=999.0,
-            s_noise=1.0,
-            verbose=True,
-            device=device,
-        )
+        if abort_event is not None:
+            sampler = GradioTrackedSampler(
+                abort_event,
+                discretization=discretization,
+                guider=guider,
+                num_steps=num_steps,
+                s_churn=0.0,
+                s_tmin=0.0,
+                s_tmax=999.0,
+                s_noise=1.0,
+                verbose=True,
+                device=device,
+            )
+        else:
+            sampler = EulerEDMSampler(
+                discretization=discretization,
+                guider=guider,
+                num_steps=num_steps,
+                s_churn=0.0,
+                s_tmin=0.0,
+                s_tmax=999.0,
+                s_noise=1.0,
+                verbose=True,
+                device=device,
+            )
         samplers.append(sampler)
     return samplers
 
@@ -1220,7 +1292,9 @@ def run_one_scene(
     traj_prior_c2ws,
     seed=23,
     gradio=False,
-    gradio_pbar=None,
+    abort_event=None,
+    first_pass_pbar=None,
+    second_pass_pbar=None,
 ):
     H, W, T, C, F, options = (
         version_dict["H"],
@@ -1483,6 +1557,7 @@ def run_one_scene(
                 discretization,
                 [len(curr_imgs)],
                 options["num_steps"],
+                abort_event=abort_event,
             )
             assert len(samplers) == 1
             samples = do_sample(
@@ -1653,6 +1728,7 @@ def run_one_scene(
                 discretization,
                 [T_first_pass, T_second_pass],
                 options["num_steps"],
+                abort_event=abort_event,
             )
             samples = do_sample(
                 model,
@@ -1674,9 +1750,11 @@ def run_one_scene(
                 F,
                 cfg=options["cfg"][0],
                 T=T_first_pass,
-                gradio_pbar=gradio_pbar,
+                global_pbar=first_pass_pbar,
                 **{k: options[k] for k in options if k not in ["cfg", "T"]},
             )
+            if samples is None:
+                return
             samples = decode_output(
                 samples, T_first_pass, chunk_prior_sels
             )  # decode into dict
@@ -1810,7 +1888,7 @@ def run_one_scene(
                 F,
                 T=T_second_pass,
                 cfg=options["cfg"][1],
-                gradio_pbar=gradio_pbar,
+                global_pbar=second_pass_pbar,
                 **{k: options[k] for k in options if k not in ["cfg", "T"]},
             )
             samples = decode_output(
