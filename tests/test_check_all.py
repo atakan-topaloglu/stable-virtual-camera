@@ -6,17 +6,17 @@ import imageio.v3 as iio
 import numpy as np
 import torch
 
-from stableviews.eval import do_sample, get_value_dict
-from stableviews.model import SGMWrapper
-from stableviews.modules.autoencoder import AutoEncoder
-from stableviews.modules.conditioner import CLIPConditioner
-from stableviews.sampling import (
+from seva.eval import do_sample, get_value_dict
+from seva.model import SGMWrapper
+from seva.modules.autoencoder import AutoEncoder
+from seva.modules.conditioner import CLIPConditioner
+from seva.sampling import (
     DDPMDiscretization,
     DiscreteDenoiser,
     EulerEDMSampler,
     MultiviewCFG,
 )
-from stableviews.utils import load_model
+from seva.utils import load_model
 
 device = torch.device("cuda:0")
 work_dir = "work_dirs/_tests/test_check_all/"

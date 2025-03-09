@@ -1,3 +1,5 @@
+import contextlib
+import os
 import os.path as osp
 import sys
 from typing import cast
@@ -15,11 +17,12 @@ class Dust3rPipeline(object):
         if submodule_path not in sys.path:
             sys.path.insert(0, submodule_path)
         try:
-            from dust3r.cloud_opt import GlobalAlignerMode, global_aligner
-            from dust3r.image_pairs import make_pairs
-            from dust3r.inference import inference
-            from dust3r.model import AsymmetricCroCo3DStereo
-            from dust3r.utils.image import load_images
+            with open(os.devnull, "w") as f, contextlib.redirect_stdout(f):
+                from dust3r.cloud_opt import GlobalAlignerMode, global_aligner
+                from dust3r.image_pairs import make_pairs
+                from dust3r.inference import inference
+                from dust3r.model import AsymmetricCroCo3DStereo
+                from dust3r.utils.image import load_images
         except ImportError:
             raise ImportError(
                 "Missing required submodule: 'dust3r'. Please ensure that all submodules are properly set up.\n\n"

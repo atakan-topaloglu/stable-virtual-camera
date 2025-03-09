@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 import torch
 import torch.nn as nn
 
-from stableviews.modules.layers import (
+from seva.modules.layers import (
     Downsample,
     GroupNorm32,
     ResBlock,
@@ -11,11 +11,11 @@ from stableviews.modules.layers import (
     Upsample,
     timestep_embedding,
 )
-from stableviews.modules.transformer import MultiviewTransformer
+from seva.modules.transformer import MultiviewTransformer
 
 
 @dataclass
-class StableViewsParams(object):
+class SevaParams(object):
     in_channels: int = 11
     model_channels: int = 320
     out_channels: int = 4
@@ -36,8 +36,8 @@ class StableViewsParams(object):
         assert len(self.channel_mult) == len(self.transformer_depth)
 
 
-class StableViews(nn.Module):
-    def __init__(self, params: StableViewsParams) -> None:
+class Seva(nn.Module):
+    def __init__(self, params: SevaParams) -> None:
         super().__init__()
         self.params = params
         self.model_channels = params.model_channels
@@ -217,7 +217,7 @@ class StableViews(nn.Module):
 
 
 class SGMWrapper(nn.Module):
-    def __init__(self, module: StableViews):
+    def __init__(self, module: Seva):
         super().__init__()
         self.module = module
 

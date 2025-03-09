@@ -11,7 +11,7 @@ import splines.quaternion
 import viser
 import viser.transforms as vt
 
-from stableviews.geometry import (
+from seva.geometry import (
     generate_spiral_path,
     get_arc_horizontal_w2cs,
     get_lemniscate_w2cs,

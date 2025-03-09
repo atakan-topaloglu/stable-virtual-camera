@@ -6,15 +6,15 @@ import imageio.v3 as iio
 import numpy as np
 import torch
 
-from stableviews.model import SGMWrapper
-from stableviews.modules.autoencoder import AutoEncoder
-from stableviews.sampling import (
+from seva.model import SGMWrapper
+from seva.modules.autoencoder import AutoEncoder
+from seva.sampling import (
     DDPMDiscretization,
     DiscreteDenoiser,
     EulerEDMSampler,
     MultiviewCFG,
 )
-from stableviews.utils import load_model
+from seva.utils import load_model
 
 sys.path.insert(0, "/admin/home-hangg/projects/stable-research/")
 

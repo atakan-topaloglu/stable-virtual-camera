@@ -26,7 +26,7 @@ from gradio.tunneling import CERTIFICATE_PATH, Tunnel
 from PIL import Image
 from tqdm import tqdm
 
-from stableviews.eval import (
+from seva.eval import (
     IS_TORCH_NIGHTLY,
     chunk_input_and_test,
     create_samplers,
@@ -41,7 +41,7 @@ from stableviews.eval import (
     transform_img_and_K,
     update_kv_for_dict,
 )
-from stableviews.geometry import (
+from seva.geometry import (
     DEFAULT_FOV_RAD,
     generate_spiral_path,
     get_arc_horizontal_w2cs,
@@ -51,13 +51,13 @@ from stableviews.geometry import (
     get_roll_w2cs,
     normalize_scene,
 )
-from stableviews.gui import define_gui
-from stableviews.model import SGMWrapper
-from stableviews.modules.autoencoder import AutoEncoder
-from stableviews.modules.conditioner import CLIPConditioner
-from stableviews.modules.preprocessor import Dust3rPipeline
-from stableviews.sampling import DDPMDiscretization, DiscreteDenoiser
-from stableviews.utils import load_model, seed_everything
+from seva.gui import define_gui
+from seva.model import SGMWrapper
+from seva.modules.autoencoder import AutoEncoder
+from seva.modules.conditioner import CLIPConditioner
+from seva.modules.preprocessor import Dust3rPipeline
+from seva.sampling import DDPMDiscretization, DiscreteDenoiser
+from seva.utils import load_model, seed_everything
 
 device = "cuda:0"
 
@@ -115,7 +115,7 @@ else:
 DUST3R = Dust3rPipeline(device=device)  # type: ignore
 MODEL = SGMWrapper(
     load_model(
-        "stabilityai/stableviews", "model.safetensors", device="cpu", verbose=True
+        "stabilityai/seva", "model.safetensors", device="cpu", verbose=True
     ).eval()
 ).to(device)
 AE = AutoEncoder(chunk_size=1).to(device)
@@ -139,7 +139,7 @@ if COMPILE:
 
 
 @dataclass
-class StableViewsSingleImageConfig:
+class SevaSingleImageConfig:
     context_window: int = 21
     target_wh: tuple[int, int] = (576, 576)
     output_root = "logs/_gradio/single_img/"
@@ -163,7 +163,7 @@ class StableViewsSingleImageConfig:
 
 
 @dataclass
-class StableViewsSingleImageData(object):
+class SevaSingleImageData(object):
     input_imgs: torch.Tensor
     input_c2ws: torch.Tensor
     input_Ks: torch.Tensor
@@ -180,8 +180,8 @@ class StableViewsSingleImageData(object):
     camera_scale: float = 2.0
 
 
-class StableViewsSingleImageRenderer(object):
-    def __init__(self, cfg: StableViewsSingleImageConfig):
+class SevaSingleImageRenderer(object):
+    def __init__(self, cfg: SevaSingleImageConfig):
         self.cfg = cfg
         self.engine = MODEL
 
@@ -792,7 +792,7 @@ class StableViewsSingleImageRenderer(object):
         )[1 - include_start_end :].tolist()
         target_indices = np.arange(num_inputs, num_inputs + num_targets).tolist()
 
-        return StableViewsSingleImageData(
+        return SevaSingleImageData(
             input_imgs,
             input_c2ws,
             input_Ks,
@@ -1216,7 +1216,7 @@ class StableViewsSingleImageRenderer(object):
             yield first_pass_tmp_file.name, second_pass_tmp_file.name
 
 
-class StableViewsRenderer(object):
+class SevaRenderer(object):
     def __init__(self, server: viser.ViserServer):
         self.server = server
         self.gui_state = None
@@ -1622,7 +1622,7 @@ def start_server(request: gr.Request):
         )
     # Give it enough time to start.
     time.sleep(1)
-    return StableViewsRenderer(server), gr.HTML(
+    return SevaRenderer(server), gr.HTML(
         f'<iframe src="{server_url}" style="display: block; margin: auto; width: 100%; height: 60vh; overflow: scroll;" frameborder="0"></iframe>',
         container=True,
     )
@@ -1652,9 +1652,7 @@ def main(server_port: int | None = None, share: bool = True):
         tabs = gr.Tabs()
         with tabs:
             with gr.Tab("Basic (Single Image)"):
-                single_image_renderer = StableViewsSingleImageRenderer(
-                    StableViewsSingleImageConfig()
-                )
+                single_image_renderer = SevaSingleImageRenderer(SevaSingleImageConfig())
                 with gr.Row(variant="panel"):
                     with gr.Row():
                         gr.Markdown(

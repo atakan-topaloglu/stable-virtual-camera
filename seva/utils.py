@@ -4,7 +4,7 @@ import safetensors.torch
 import torch
 from huggingface_hub import hf_hub_download
 
-from stableviews.model import StableViews, StableViewsParams
+from seva.model import Seva, SevaParams
 
 
 def seed_everything(seed: int = 0):
@@ -27,11 +27,11 @@ def print_load_warning(missing: list[str], unexpected: list[str]) -> None:
 
 
 def load_model(
-    pretrained_model_name_or_path: str,
-    weight_name: str,
+    pretrained_model_name_or_path: str = "stabilityai/stableviews",
+    weight_name: str = "model.safetensors",
     device: str | torch.device = "cuda",
     verbose: bool = False,
-) -> StableViews:
+) -> Seva:
     if os.path.isdir(pretrained_model_name_or_path):
         weight_path = os.path.join(pretrained_model_name_or_path, weight_name)
     else:
@@ -53,7 +53,7 @@ def load_model(
     }
 
     with torch.device("meta"):
-        model = StableViews(StableViewsParams()).to(torch.bfloat16)
+        model = Seva(SevaParams()).to(torch.bfloat16)
 
     missing, unexpected = model.load_state_dict(
         model_state_dict, strict=False, assign=True

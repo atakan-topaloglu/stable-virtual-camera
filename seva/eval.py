@@ -1,4 +1,5 @@
 import collections
+import json
 import math
 import os
 import re
@@ -19,14 +20,14 @@ from einops import repeat
 from PIL import Image
 from tqdm.auto import tqdm
 
-from stableviews.geometry import get_camera_dist, get_plucker_coordinates, to_hom_pose
-from stableviews.sampling import (
+from seva.geometry import get_camera_dist, get_plucker_coordinates, to_hom_pose
+from seva.sampling import (
     EulerEDMSampler,
     MultiviewCFG,
     MultiviewTemporalCFG,
     VanillaCFG,
 )
-from stableviews.utils import seed_everything
+from seva.utils import seed_everything
 
 try:
     # Check if version string contains 'dev' or 'nightly'
@@ -995,6 +996,33 @@ def save_output(
             pass
 
 
+def create_transforms_simple(save_path, img_paths, img_whs, c2ws, Ks):
+    import os.path as osp
+
+    out_frames = []
+    for img_path, img_wh, c2w, K in zip(img_paths, img_whs, c2ws, Ks):
+        out_frame = {
+            "fl_x": K[0][0].item(),
+            "fl_y": K[1][1].item(),
+            "cx": K[0][2].item(),
+            "cy": K[1][2].item(),
+            "w": img_wh[0].item(),
+            "h": img_wh[1].item(),
+            "file_path": f"./{osp.relpath(img_path, start=save_path)}"
+            if img_path is not None
+            else None,
+            "transform_matrix": c2w.tolist(),
+        }
+        out_frames.append(out_frame)
+    out = {
+        # "camera_model": "PINHOLE",
+        "orientation_override": "none",
+        "frames": out_frames,
+    }
+    with open(osp.join(save_path, "transforms.json"), "w") as of:
+        json.dump(out, of, indent=5)
+
+
 class GradioTrackedSampler(EulerEDMSampler):
     """
     A thin wrapper around the EulerEDMSampler that allows tracking progress and
@@ -1189,6 +1217,7 @@ def do_sample(
     encoding_t=1,
     decoding_t=1,
     verbose=True,
+    global_pbar=None,
     **_,
 ):
     imgs = value_dict["cond_frames"].to("cuda")
@@ -1224,6 +1253,7 @@ def do_sample(
         )
         c_dense_vector = pluckers
         uc_dense_vector = c_dense_vector
+        # TODO(hangg): concat and dense are problematic.
         c = {
             "crossattn": c_crossattn,
             "replace": c_replace,
@@ -1244,13 +1274,10 @@ def do_sample(
             "c2w": value_dict["c2w"].to("cuda"),
             "K": value_dict["K"].to("cuda"),
             "input_frame_mask": value_dict["cond_frames_mask"].to("cuda"),
-            # "input_frame_psuedo_mask": value_dict["cond_frames_psuedo_mask"].to("cuda"),
         }
 
         shape = (math.prod(num_samples), C, H // F, W // F)
         randn = torch.randn(shape).to("cuda")
-        # randn will be changed in-place after sampling.
-        # randn_ = randn.clone()
 
         load_model(model)
         samples_z = sampler(
@@ -1266,6 +1293,7 @@ def do_sample(
             cond=c,
             uc=uc,
             verbose=verbose,
+            global_pbar=global_pbar,
             **additional_sampler_inputs,
         )
         unload_model(model)
@@ -1751,7 +1779,7 @@ def run_one_scene(
                 cfg=options["cfg"][0],
                 T=T_first_pass,
                 global_pbar=first_pass_pbar,
-                **{k: options[k] for k in options if k not in ["cfg", "T"]},
+                **{k: options[k] for k in options if k not in ["cfg", "T", "sampler"]},
             )
             if samples is None:
                 return
@@ -1889,7 +1917,7 @@ def run_one_scene(
                 T=T_second_pass,
                 cfg=options["cfg"][1],
                 global_pbar=second_pass_pbar,
-                **{k: options[k] for k in options if k not in ["cfg", "T"]},
+                **{k: options[k] for k in options if k not in ["cfg", "T", "sampler"]},
             )
             samples = decode_output(
                 samples, T_second_pass, chunk_test_sels

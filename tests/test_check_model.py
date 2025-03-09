@@ -2,7 +2,7 @@ import sys
 
 import torch
 
-from stableviews.utils import load_model
+from seva.utils import load_model
 
 sys.path.insert(0, "/admin/home-hangg/projects/stable-research/")
 from scripts.threeD_diffusion.run_eval import init_model

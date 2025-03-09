@@ -8,8 +8,8 @@
 # echo "Activating the virtual environment..."
 # source venv/bin/activate
 
-# Install stableviews dependencies.
-echo "Installing stableviews dependencies..."
+# Install seva dependencies.
+echo "Installing seva dependencies..."
 pip install -e .
 
 # Install dust3r dependencies for demo (our model is not dependent on it).

@@ -4,8 +4,8 @@ import torch
 import torch.nn.functional as F
 from einops import repeat
 
-from stableviews.modules.autoencoder import AutoEncoder
-from stableviews.modules.conditioner import CLIPConditioner
+from seva.modules.autoencoder import AutoEncoder
+from seva.modules.conditioner import CLIPConditioner
 
 sys.path.insert(0, "/admin/home-hangg/projects/stable-research/")
 from scripts.threeD_diffusion.run_eval import (

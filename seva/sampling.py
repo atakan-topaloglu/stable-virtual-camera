@@ -4,7 +4,7 @@ import torch.nn as nn
 from einops import rearrange
 from tqdm import tqdm
 
-from stableviews.geometry import get_camera_dist
+from seva.geometry import get_camera_dist
 
 
 def append_dims(x: torch.Tensor, target_dims: int) -> torch.Tensor:
@@ -336,12 +336,6 @@ class EulerEDMSampler(object):
     def get_sigma_gen(self, num_sigmas: int, verbose: bool = True) -> range | tqdm:
         sigma_generator = range(num_sigmas - 1)
         if self.verbose and verbose:
-            print(
-                f"Sampling setting:\n"
-                f"Sampler: {self.__class__.__name__}\n"
-                f"Discretization: {self.discretization.__class__.__name__}\n"
-                f"Guider: {self.guider.__class__.__name__}\n"
-            )
             sigma_generator = tqdm(
                 sigma_generator,
                 total=num_sigmas - 1,

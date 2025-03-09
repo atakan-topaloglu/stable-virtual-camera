@@ -1,4 +1,5 @@
 import copy
+import json
 import os
 import os.path as osp
 import queue
@@ -10,6 +11,7 @@ from pathlib import Path
 
 import gradio as gr
 import httpx
+import imageio.v3 as iio
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -21,21 +23,22 @@ from gradio import networking
 from gradio.context import LocalContext
 from gradio.tunneling import CERTIFICATE_PATH, Tunnel
 
-from stableviews.eval import (
+from seva.eval import (
     IS_TORCH_NIGHTLY,
     chunk_input_and_test,
+    create_transforms_simple,
     infer_prior_stats,
     run_one_scene,
     transform_img_and_K,
 )
-from stableviews.geometry import normalize_scene
-from stableviews.gui import define_gui
-from stableviews.model import SGMWrapper
-from stableviews.modules.autoencoder import AutoEncoder
-from stableviews.modules.conditioner import CLIPConditioner
-from stableviews.modules.preprocessor import Dust3rPipeline
-from stableviews.sampling import DDPMDiscretization, DiscreteDenoiser
-from stableviews.utils import load_model
+from seva.geometry import normalize_scene
+from seva.gui import define_gui
+from seva.model import SGMWrapper
+from seva.modules.autoencoder import AutoEncoder
+from seva.modules.conditioner import CLIPConditioner
+from seva.modules.preprocessor import Dust3rPipeline
+from seva.sampling import DDPMDiscretization, DiscreteDenoiser
+from seva.utils import load_model
 
 device = "cuda:0"
 
@@ -43,21 +46,6 @@ device = "cuda:0"
 # Constants.
 WORK_DIR = "work_dirs/demo_gr"
 MAX_SESSIONS = 1
-HEADER = """
-<style>
-  body,
-  html {
-    margin: 0;
-    padding: 0;
-    height: 100%;
-  }
-  iframe {
-    border: 0;
-    width: 100%;
-    height: 100%;
-  }
-</style>
-"""
 EXAMPLE_DIR = "/admin/home-hangg/projects/stable-research/.bak/demo-assets/"
 EXAMPLE_MAP = [
     (
@@ -106,7 +94,7 @@ SERVERS = {}
 ABORT_EVENTS = {}
 
 
-class ScenaRenderer(object):
+class SevaRenderer(object):
     def __init__(self, server: viser.ViserServer):
         self.server = server
         self.gui_state = None
@@ -174,7 +162,8 @@ class ScenaRenderer(object):
                 img, K = transform_img_and_K(img, (shorter, shorter), K=K[None])
             else:
                 img, K = transform_img_and_K(img, shorter, K=K[None], size_stride=64)
-            K = K / np.array([img.shape[-1], img.shape[-2], 1])[:, None]
+            assert isinstance(K, torch.Tensor)
+            K = K / K.new_tensor([img.shape[-1], img.shape[-2], 1])[:, None]
             new_input_imgs.append(img)
             new_input_Ks.append(K)
         input_imgs = torch.cat(new_input_imgs, 0)
@@ -325,6 +314,52 @@ class ScenaRenderer(object):
         target_Ks = torch.as_tensor(np.array(target_Ks).reshape(-1, 3, 3))
         return target_c2ws, target_Ks
 
+    def export_output_data(self, preprocessed: dict, output_dir: str):
+        input_imgs, input_Ks, input_c2ws, input_wh = (
+            preprocessed["input_imgs"],
+            preprocessed["input_Ks"],
+            preprocessed["input_c2ws"],
+            preprocessed["input_wh"],
+        )
+        target_c2ws, target_Ks = self.get_target_c2ws_and_Ks(preprocessed)
+
+        num_inputs = len(input_imgs)
+        num_targets = len(target_c2ws)
+
+        input_imgs = (input_imgs.cpu().numpy() * 255.0).astype(np.uint8)
+        input_c2ws = input_c2ws.cpu().numpy()
+        input_Ks = input_Ks.cpu().numpy()
+        target_c2ws = target_c2ws.cpu().numpy()
+        target_Ks = target_Ks.cpu().numpy()
+        img_whs = np.array(input_wh)[None].repeat(len(input_imgs) + len(target_Ks), 0)
+
+        os.makedirs(output_dir, exist_ok=True)
+        img_paths = []
+        for i, img in enumerate(input_imgs):
+            iio.imwrite(img_path := osp.join(output_dir, f"{i:03d}.png"), img)
+            img_paths.append(img_path)
+        for i in range(num_targets):
+            iio.imwrite(
+                img_path := osp.join(output_dir, f"{i + num_inputs:03d}.png"),
+                np.zeros((input_wh[1], input_wh[0], 3), dtype=np.uint8),
+            )
+            img_paths.append(img_path)
+
+        # Convert from OpenCV to OpenGL camera format.
+        all_c2ws = np.concatenate([input_c2ws, target_c2ws])
+        all_Ks = np.concatenate([input_Ks, target_Ks])
+        all_c2ws = all_c2ws @ np.diag([1, -1, -1, 1])
+        create_transforms_simple(output_dir, img_paths, img_whs, all_c2ws, all_Ks)
+        split_dict = {
+            "train_ids": list(range(num_inputs)),
+            "test_ids": list(range(num_inputs, num_inputs + num_targets)),
+        }
+        with open(
+            osp.join(output_dir, f"train_test_split_{num_inputs}.json"), "w"
+        ) as f:
+            json.dump(split_dict, f, indent=4)
+        gr.Info(f"Output data saved to {output_dir}", duration=3)
+
     def render(
         self,
         preprocessed: dict,
@@ -360,12 +395,17 @@ class ScenaRenderer(object):
         # infer_prior_stats modifies T in-place.
         T = version_dict["T"]
         assert isinstance(num_anchors, int)
+        # anchor_indices = np.linspace(
+        #     num_inputs,
+        #     num_inputs + num_targets - 1,
+        #     num_anchors + 1 - include_start_end,
+        #     endpoint=include_start_end,
+        # )[1 - include_start_end :].tolist()
         anchor_indices = np.linspace(
             num_inputs,
             num_inputs + num_targets - 1,
-            num_anchors + 1 - include_start_end,
-            endpoint=include_start_end,
-        )[1 - include_start_end :].tolist()
+            num_anchors,
+        ).tolist()
         anchor_c2ws = target_c2ws[
             np.linspace(0, num_targets - 1, num_anchors)
             .round()
@@ -386,7 +426,7 @@ class ScenaRenderer(object):
         }
         # Create camera conditioning (K is unnormalized).
         Ks_ori = torch.cat([input_Ks, target_Ks], 0)
-        Ks_ori = Ks_ori / Ks_ori.new_tensor([W, H, 1])[:, None]
+        Ks_ori = Ks_ori * Ks_ori.new_tensor([W, H, 1])[:, None]
         camera_cond = {
             "c2w": torch.cat([input_c2ws, target_c2ws], 0),
             "K": Ks_ori,
@@ -410,7 +450,6 @@ class ScenaRenderer(object):
         assert session_hash in ABORT_EVENTS
         abort_event = ABORT_EVENTS[session_hash]
         abort_event.clear()
-        options["sampler"] = 1
         options["abort_event"] = abort_event
         task = "img2trajvid"
         # Get number of first pass chunks.
@@ -486,6 +525,7 @@ class ScenaRenderer(object):
             gradio=True,
             first_pass_pbar=first_pass_pbar,
             second_pass_pbar=second_pass_pbar,
+            abort_event=abort_event,
         )
         output_queue = queue.Queue()
 
@@ -499,10 +539,22 @@ class ScenaRenderer(object):
             LocalContext.event_id.set(event_id)
             for i, video_path in enumerate(video_path_generator):
                 if i == 0:
-                    output_queue.put((video_path, gr.update(), gr.update()))
+                    output_queue.put(
+                        (
+                            video_path,
+                            gr.update(),
+                            gr.update(),
+                            gr.update(),
+                        )
+                    )
                 elif i == 1:
                     output_queue.put(
-                        (video_path, gr.update(visible=False), gr.update(visible=False))
+                        (
+                            video_path,
+                            gr.update(visible=True),
+                            gr.update(visible=False),
+                            gr.update(visible=False),
+                        )
                     )
                 else:
                     gr.Error("More than two passes during rendering.")
@@ -513,7 +565,12 @@ class ScenaRenderer(object):
         while thread.is_alive() or not output_queue.empty():
             if abort_event.is_set():
                 thread.join()
-                yield gr.update(), gr.update(visible=False), gr.update(visible=False)
+                yield (
+                    gr.update(),
+                    gr.update(visible=True),
+                    gr.update(visible=False),
+                    gr.update(visible=False),
+                )
             time.sleep(0.1)
             while not output_queue.empty():
                 yield output_queue.get()
@@ -564,6 +621,7 @@ def start_server_and_abort_event(request: gr.Request):
 
     @server.on_client_connect
     def _(client: viser.ClientHandle):
+        # Force dark mode that blends well with gradio's dark theme.
         client.gui.configure_theme(
             dark_mode=True,
             show_share_button=False,
@@ -589,7 +647,7 @@ def start_server_and_abort_event(request: gr.Request):
     ABORT_EVENTS[request.session_hash] = threading.Event()
 
     return (
-        ScenaRenderer(server),
+        SevaRenderer(server),
         gr.HTML(
             f'<iframe src="{server_url}" style="display: block; margin: auto; width: 100%; height: 60vh;" frameborder="0"></iframe>',
             container=True,
@@ -623,8 +681,35 @@ def get_examples(selection: gr.SelectData):
     )
 
 
+# Make sure that viewport is not truncated.
+_APP_HEADER = """
+<style>
+  body,
+  html {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+  }
+  iframe {
+    border: 0;
+    width: 100%;
+    height: 100%;
+  }
+</style>
+"""
+# Make sure that gradio uses dark theme.
+_APP_JS = """
+function refresh() {
+    const url = new URL(window.location);
+    if (url.searchParams.get('__theme') !== 'dark') {
+        url.searchParams.set('__theme', 'dark');
+    }
+}
+"""
+
+
 def main(server_port: int | None = None, share: bool = True):
-    with gr.Blocks(head=HEADER) as app:
+    with gr.Blocks(head=_APP_HEADER, js=_APP_JS) as app:
         renderer = gr.State()
         session_hash = gr.State()
         input_data = gr.State()
@@ -777,9 +862,8 @@ def main(server_port: int | None = None, share: bool = True):
                 )
             with gr.Column():
                 with gr.Group():
-                    with gr.Row():
-                        abort_btn = gr.Button("Abort", visible=False)
-                        render_btn.render()
+                    abort_btn = gr.Button("Abort rendering", visible=False)
+                    render_btn.render()
                     render_progress = gr.Textbox(
                         label="", visible=False, interactive=False
                     )
@@ -797,12 +881,16 @@ def main(server_port: int | None = None, share: bool = True):
                         cfg,
                         camera_scale,
                     ],
-                    outputs=[output_video, abort_btn, render_progress],
+                    outputs=[output_video, render_btn, abort_btn, render_progress],
                     show_progress_on=[render_progress],
                 )
                 render_btn.click(
-                    lambda: (gr.update(visible=True), gr.update(visible=True)),
-                    outputs=[abort_btn, render_progress],
+                    lambda: [
+                        gr.update(visible=False),
+                        gr.update(visible=True),
+                        gr.update(visible=True),
+                    ],
+                    outputs=[render_btn, abort_btn, render_progress],
                 )
                 abort_btn.click(set_abort_event)
         # Register the session initialization and cleanup functions.
