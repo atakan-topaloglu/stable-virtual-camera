@@ -357,45 +357,77 @@ def infer_prior_stats(
     options = version_dict["options"]
     chunk_strategy = options.get("chunk_strategy", "nearest")
     T_first_pass = T[0] if isinstance(T, (list, tuple)) else T
+    T_second_pass = T[1] if isinstance(T, (list, tuple)) else T
     # get traj_prior_c2ws for 2-pass sampling
     if chunk_strategy.startswith("interp"):
-        T_second_pass = T[1] if isinstance(T, (list, tuple)) else T
-        # start and end have alreay taken up two slots
+        # Start and end have alreay taken up two slots
         # +1 means we need X + 1 prior frames to bound X times forwards for all test frames
-        num_prior_frames = (
-            math.ceil(
-                num_total_frames
-                / (
-                    T_second_pass
-                    - 2
-                    - (num_input_frames if "gt" in chunk_strategy else 0)
-                )
-            )
-            + 1
-        )
 
-        if num_prior_frames + num_input_frames < T_first_pass:
-            num_prior_frames = T_first_pass - num_input_frames
-
-        num_prior_frames = max(
-            num_prior_frames,
-            options.get("num_prior_frames", 0),
-        )
-
+        # Tuning up `num_prior_frames_ratio` is helpful when you observe sudden jump in the
+        # generated frames due to insufficient prior frames. This option is effective for
+        # complicated trajectory and when `interp` strategy is used (usually semi-dense-view 
+        # regime). Recommended range is [1.0 (default), 1.5].
         if num_input_frames >= options.get("num_input_semi_dense", 9):
+            num_prior_frames = (
+                math.ceil(
+                    num_total_frames
+                    / (T_second_pass - 2)
+                    * options.get("num_prior_frames_ratio", 1.0)
+                )
+                + 1
+            )
+
+            if num_prior_frames + num_input_frames < T_first_pass:
+                num_prior_frames = T_first_pass - num_input_frames
+
+            num_prior_frames = max(
+                num_prior_frames,
+                options.get("num_prior_frames", 0),
+            )
+
             T_first_pass = num_prior_frames + num_input_frames
-            if isinstance(T, (list, tuple)):
-                version_dict["T"] = (T_first_pass, version_dict["T"][1])
-            else:
-                version_dict["T"] = [T_first_pass, T]
-        include_start_end = True
+
+            if "gt" in chunk_strategy:
+                T_second_pass = T_second_pass + num_input_frames
+
+            # Dynamically update context window length.
+            version_dict["T"] = [T_first_pass, T_second_pass]
+
+        else:
+            num_prior_frames = (
+                math.ceil(
+                    num_total_frames
+                    / (
+                        T_second_pass
+                        - 2
+                        - (num_input_frames if "gt" in chunk_strategy else 0)
+                    )
+                    * options.get("num_prior_frames_ratio", 1.0)
+                )
+                + 1
+            )
+
+            if num_prior_frames + num_input_frames < T_first_pass:
+                num_prior_frames = T_first_pass - num_input_frames
+
+            num_prior_frames = max(
+                num_prior_frames,
+                options.get("num_prior_frames", 0),
+            )
     else:
         num_prior_frames = max(
             T_first_pass - num_input_frames,
             options.get("num_prior_frames", 0),
         )
-        include_start_end = False
-    return num_prior_frames, include_start_end
+        
+        if num_input_frames >= options.get("num_input_semi_dense", 9):
+            T_first_pass = num_prior_frames + num_input_frames
+            
+            # Dynamically update context window length.
+            version_dict["T"] = [T_first_pass, T_second_pass]
+        
+    return num_prior_frames
+
 
 
 def infer_prior_inds(
@@ -724,7 +756,7 @@ def chunk_input_and_test(
         if "img2trajvid" in task:
             assert (
                 list(range(len(gt_input_inds))) == gt_input_inds
-            ), "`img2trajvid` task should put `gt_input_inds` in start."
+            ), "`img2trajvid` task should put `gt_input_inds` at start."
             input_c2ws = input_c2ws[
                 [ind for ind in range(M) if ind not in gt_input_inds]
             ]
@@ -1425,24 +1457,8 @@ def run_one_scene(
 
     seed_everything(seed)
 
-    # Get data
-    if task in [
-        "img2img",
-        "img2vid",
-        "img2trajvid_s-prob",
-        "img2trajvid_se-interp",
-        "img2trajvid",
-    ]:
-        input_indices = image_cond["input_indices"]
-    elif task in ["vid2cam", "vid2dep"]:
-        input_indices = camera_cond["input_indices"]
-    elif task in ["img2all"]:
-        input_indices = list(
-            set(image_cond["input_indices"]) & set(camera_cond["input_indices"])
-        )  # input indices are slots where both frame and camera are available
-    else:
-        assert False, f"Task {task} is not supported."
-
+    # Get Data
+    input_indices = image_cond["input_indices"]
     input_imgs = imgs[input_indices]
     input_imgs_clip = imgs_clip[input_indices]
     input_c2ws = camera_cond["c2w"][input_indices]

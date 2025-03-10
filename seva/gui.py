@@ -11,13 +11,7 @@ import splines.quaternion
 import viser
 import viser.transforms as vt
 
-from seva.geometry import (
-    generate_spiral_path,
-    get_arc_horizontal_w2cs,
-    get_lemniscate_w2cs,
-    get_panning_w2cs,
-    get_roll_w2cs,
-)
+from seva.geometry import get_preset_pose_fov
 
 
 @dataclasses.dataclass
@@ -574,7 +568,6 @@ def define_gui(
             camera_traj.reset()
             gui_state.camera_traj_list = None
 
-            option = preset_traj_dropdown.value
             duration = preset_duration_num.value
             fps = framerate_number.value
             num_frames = int(duration * fps)
@@ -596,108 +589,15 @@ def define_gui(
             )
             look_at = torch.as_tensor(camera.look_at, dtype=torch.float32)
             up_direction = torch.as_tensor(camera.up_direction, dtype=torch.float32)
-
-            poses = fovs = None
-            if option == "orbit":
-                poses = torch.linalg.inv(
-                    get_arc_horizontal_w2cs(
-                        start_w2c,
-                        look_at,
-                        up_direction,
-                        num_frames=num_frames,
-                        endpoint=False,
-                    )
-                ).numpy()
-                fovs = np.full((num_frames,), camera.fov)
-            elif option == "spiral":
-                poses = generate_spiral_path(
-                    torch.linalg.inv(start_w2c)[None].numpy()
-                    @ np.diagflat([1, -1, -1, 1]),
-                    np.array([1, 5]),
-                    n_frames=num_frames,
-                    n_rots=2,
-                    zrate=0.5,
-                    radii=[0.5, 0.5, 0.2],
-                    endpoint=False,
-                ) @ np.diagflat([1, -1, -1, 1])
-                fovs = np.full((num_frames,), camera.fov)
-            elif option == "lemniscate":
-                poses = torch.linalg.inv(
-                    get_lemniscate_w2cs(
-                        start_w2c,
-                        look_at,
-                        up_direction,
-                        num_frames,
-                        degree=60.0,
-                        endpoint=False,
-                    )
-                ).numpy()
-                fovs = np.full((num_frames,), camera.fov)
-            elif option == "roll":
-                poses = torch.linalg.inv(
-                    get_roll_w2cs(
-                        start_w2c,
-                        look_at,
-                        None,
-                        num_frames,
-                        degree=360.0,
-                        endpoint=False,
-                    )
-                ).numpy()
-                fovs = np.full((num_frames,), camera.fov)
-            elif option in [
-                "dolly zoom-in",
-                "dolly zoom-out",
-                "zoom-in",
-                "zoom-out",
-            ]:
-                if option.startswith("dolly"):
-                    direction = "backward" if option == "dolly zoom-in" else "forward"
-                    poses = torch.linalg.inv(
-                        get_panning_w2cs(
-                            start_w2c,
-                            look_at,
-                            up_direction,
-                            num_frames,
-                            endpoint=True,
-                            direction=direction,
-                        )
-                    ).numpy()
-                else:
-                    poses = (
-                        torch.linalg.inv(start_w2c)[None]
-                        .repeat(num_frames, 1, 1)
-                        .numpy()
-                    )
-                # TODO(hangg): Here always assume DEFAULT_FOV_RAD, need to
-                # improve to support general case.
-                fov_rad_start = camera.fov
-                fov_rad_end = (0.28 if option.endswith("zoom-in") else 1.5) * camera.fov
-                fovs = (
-                    np.linspace(0, 1, num_frames) * (fov_rad_end - fov_rad_start)
-                    + fov_rad_start
-                )
-            elif option in [
-                "pan-forward",
-                "pan-backward",
-                "pan-up",
-                "pan-down",
-                "pan-left",
-                "pan-right",
-            ]:
-                poses = torch.linalg.inv(
-                    get_panning_w2cs(
-                        start_w2c,
-                        look_at,
-                        up_direction,
-                        num_frames,
-                        endpoint=True,
-                        direction=option.removeprefix("pan-"),
-                    )
-                ).numpy()
-                fovs = np.full((num_frames,), camera.fov)
-            else:
-                raise ValueError(f"Unknown preset option {option}.")
+            poses, fovs = get_preset_pose_fov(
+                option=preset_traj_dropdown.value, 
+                num_frames=num_frames,
+                start_w2c=start_w2c,
+                look_at=look_at,
+                up_direction=up_direction,
+                fov=camera.fov,
+            )
+            
             assert poses is not None and fovs is not None
             for pose, fov in zip(poses, fovs):
                 camera_traj.add_camera(

@@ -40,6 +40,7 @@ from seva.modules.preprocessor import Dust3rPipeline
 from seva.sampling import DDPMDiscretization, DiscreteDenoiser
 from seva.utils import load_model
 
+
 device = "cuda:0"
 
 
@@ -379,6 +380,9 @@ class SevaRenderer(object):
             preprocessed["input_wh"],
         )
         target_c2ws, target_Ks = self.get_target_c2ws_and_Ks(preprocessed)
+        all_c2ws = torch.cat([input_c2ws, target_c2ws])
+        all_Ks = torch.cat([input_Ks, target_Ks])
+        
         num_inputs = len(input_imgs)
         num_targets = len(target_c2ws)
         input_indices = list(range(num_inputs))
@@ -386,7 +390,7 @@ class SevaRenderer(object):
         # Get anchor cameras.
         T = VERSION_DICT["T"]
         version_dict = copy.deepcopy(VERSION_DICT)
-        num_anchors, include_start_end = infer_prior_stats(
+        num_anchors = infer_prior_stats(
             T,
             num_inputs,
             num_total_frames=num_targets,
@@ -395,24 +399,23 @@ class SevaRenderer(object):
         # infer_prior_stats modifies T in-place.
         T = version_dict["T"]
         assert isinstance(num_anchors, int)
-        # anchor_indices = np.linspace(
-        #     num_inputs,
-        #     num_inputs + num_targets - 1,
-        #     num_anchors + 1 - include_start_end,
-        #     endpoint=include_start_end,
-        # )[1 - include_start_end :].tolist()
         anchor_indices = np.linspace(
             num_inputs,
             num_inputs + num_targets - 1,
             num_anchors,
         ).tolist()
-        anchor_c2ws = target_c2ws[
-            np.linspace(0, num_targets - 1, num_anchors)
+        anchor_c2ws = all_c2ws[
+            anchor_indices
             .round()
             .astype(np.int64)
             .tolist()
         ]
-        anchor_Ks = None
+        anchor_Ks = all_Ks[
+            anchor_indices
+            .round()
+            .astype(np.int64)
+            .tolist()
+        ]
         # Create image conditioning.
         all_imgs_np = (
             F.pad(input_imgs, (0, 0, 0, 0, 0, 0, 0, num_targets), value=0.0).numpy()

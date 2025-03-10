@@ -212,6 +212,119 @@ def rt_to_mat4(
     return mat4
 
 
+def get_preset_pose_fov(
+    option: str,
+    num_frames: int,
+    start_w2c: torch.Tensor,
+    look_at: torch.Tensor,
+    up_direction: torch.Tensor = None,
+    fov: float = DEFAULT_FOV_RAD,
+):
+    poses = fovs = None
+    if option == "orbit":
+        poses = torch.linalg.inv(
+            get_arc_horizontal_w2cs(
+                start_w2c,
+                look_at,
+                up_direction,
+                num_frames=num_frames,
+                endpoint=False,
+            )
+        ).numpy()
+        fovs = np.full((num_frames,), fov)
+    elif option == "spiral":
+        poses = generate_spiral_path(
+            torch.linalg.inv(start_w2c)[None].numpy()
+            @ np.diagflat([1, -1, -1, 1]),
+            np.array([1, 5]),
+            n_frames=num_frames,
+            n_rots=2,
+            zrate=0.5,
+            radii=[0.5, 0.5, 0.2],
+            endpoint=False,
+        ) @ np.diagflat([1, -1, -1, 1])
+        fovs = np.full((num_frames,), fov)
+    elif option == "lemniscate":
+        poses = torch.linalg.inv(
+            get_lemniscate_w2cs(
+                start_w2c,
+                look_at,
+                up_direction,
+                num_frames,
+                degree=60.0,
+                endpoint=False,
+            )
+        ).numpy()
+        fovs = np.full((num_frames,), fov)
+    elif option == "roll":
+        poses = torch.linalg.inv(
+            get_roll_w2cs(
+                start_w2c,
+                look_at,
+                None,
+                num_frames,
+                degree=360.0,
+                endpoint=False,
+            )
+        ).numpy()
+        fovs = np.full((num_frames,), fov)
+    elif option in [
+        "dolly zoom-in",
+        "dolly zoom-out",
+        "zoom-in",
+        "zoom-out",
+    ]:
+        if option.startswith("dolly"):
+            direction = "backward" if option == "dolly zoom-in" else "forward"
+            poses = torch.linalg.inv(
+                get_panning_w2cs(
+                    start_w2c,
+                    look_at,
+                    up_direction,
+                    num_frames,
+                    endpoint=True,
+                    direction=direction,
+                )
+            ).numpy()
+        else:
+            poses = (
+                torch.linalg.inv(start_w2c)[None]
+                .repeat(num_frames, 1, 1)
+                .numpy()
+            )
+        # TODO(hangg): Here always assume DEFAULT_FOV_RAD, need to
+        # improve to support general case.
+        fov_rad_start = fov
+        fov_rad_end = (0.28 if option.endswith("zoom-in") else 1.5) * fov
+        fovs = (
+            np.linspace(0, 1, num_frames) * (fov_rad_end - fov_rad_start)
+            + fov_rad_start
+        )
+    elif option in [
+        "pan-forward",
+        "pan-backward",
+        "pan-up",
+        "pan-down",
+        "pan-left",
+        "pan-right",
+    ]:
+        poses = torch.linalg.inv(
+            get_panning_w2cs(
+                start_w2c,
+                look_at,
+                up_direction,
+                num_frames,
+                endpoint=True,
+                direction=option.removeprefix("pan-"),
+            )
+        ).numpy()
+        fovs = np.full((num_frames,), fov)
+    else:
+        raise ValueError(f"Unknown preset option {option}.")
+
+    return poses, fovs
+
+
 def get_lookat_w2cs(
     positions: torch.Tensor,
     lookat: torch.Tensor,
