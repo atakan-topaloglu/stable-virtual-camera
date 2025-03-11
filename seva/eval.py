@@ -915,17 +915,17 @@ def replace_or_include_input_for_dict(
         if "rgb" in sample:
             imgs[test_indices] = (
                 value[test_indices] if value.shape[0] == imgs.shape[0] else value
-            ).to(imgs.device)
+            ).to(device=imgs.device, dtype=imgs.dtype)
             samples_new[sample] = imgs
         elif "c2w" in sample:
             c2w[test_indices] = (
                 value[test_indices] if value.shape[0] == c2w.shape[0] else value
-            ).to(c2w.device)
+            ).to(device=c2w.device, dtype=c2w.dtype)
             samples_new[sample] = c2w
         elif "intrinsics" in sample:
             K[test_indices] = (
                 value[test_indices] if value.shape[0] == K.shape[0] else value
-            ).to(K.device)
+            ).to(device=K.device, dtype=K.dtype)
             samples_new[sample] = K
         else:
             samples_new[sample] = value
@@ -1425,11 +1425,6 @@ def run_one_scene(
             K[1] /= H
             camera_cond["K"][i] = K
             img_clip = img
-        elif isinstance(img, (list, tuple)) and isinstance(img[0], torch.Tensor):
-            # NOTE(@jensen): This is only happening when dataset_latent is set to True.
-            # We have preprocessed the data so load_img_and_K is not required.
-            img, img_clip = img.cpu()
-            img_clip, img = (img_clip.unsqueeze(0), img.unsqueeze(0))
         else:
             assert (
                 False
@@ -1480,13 +1475,7 @@ def run_one_scene(
 
     if options.get("save_input", True):
         save_output(
-            {
-                "/image": model.decode_first_stage(
-                    model.encode_first_stage(input_imgs.to("cuda"))
-                )
-                if options.get("dataset_latent", False)
-                else input_imgs
-            },
+            input_imgs,
             save_path=os.path.join(save_path, "input"),
             video_save_fps=2,
         )
@@ -1639,11 +1628,7 @@ def run_one_scene(
                     replace_or_include_input_for_dict(
                         samples,
                         chunk_test_sels,
-                        model.decode_first_stage(
-                            model.encode_first_stage(curr_imgs.to("cuda"))
-                        ).to(curr_imgs.device)
-                        if options.get("dataset_latent", False)
-                        else curr_imgs,
+                        curr_imgs,
                         curr_c2ws,
                         curr_Ks,
                     ),
@@ -1964,11 +1949,7 @@ def run_one_scene(
                     replace_or_include_input_for_dict(
                         samples,
                         chunk_test_sels,
-                        model.decode_first_stage(
-                            model.encode_first_stage(curr_imgs.to("cuda"))
-                        ).to(curr_imgs.device)
-                        if options.get("dataset_latent", False)
-                        else curr_imgs,
+                        curr_imgs,
                         curr_c2ws,
                         curr_Ks,
                     ),
@@ -1984,11 +1965,7 @@ def run_one_scene(
         replace_or_include_input_for_dict(
             all_samples,
             test_indices,
-            model.decode_first_stage(
-                model.encode_first_stage(imgs.clone().to("cuda"))
-            ).to(imgs.device)
-            if options.get("dataset_latent", False)
-            else imgs.clone(),
+            imgs.clone(),
             camera_cond["c2w"].clone(),
             camera_cond["K"].clone(),
         )
