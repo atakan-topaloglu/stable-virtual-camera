@@ -1475,7 +1475,7 @@ def run_one_scene(
 
     if options.get("save_input", True):
         save_output(
-            input_imgs,
+            {"/image": input_imgs},
             save_path=os.path.join(save_path, "input"),
             video_save_fps=2,
         )
