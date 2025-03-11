@@ -206,7 +206,7 @@ with (
     )
 samples = ae.decode(samples_z)
 iio.imwrite(
-    osp.join(work_dir, "stableviews.mp4"),
+    osp.join(work_dir, "seva.mp4"),
     (
         (samples.permute(0, 2, 3, 1) * 0.5 + 0.5).clamp(0, 1).cpu().numpy() * 255.0
     ).astype(np.uint8),

@@ -27,7 +27,7 @@ def print_load_warning(missing: list[str], unexpected: list[str]) -> None:
 
 
 def load_model(
-    pretrained_model_name_or_path: str = "stabilityai/stableviews",
+    pretrained_model_name_or_path: str = "stabilityai/stable-virtual-camera",
     weight_name: str = "model.safetensors",
     device: str | torch.device = "cuda",
     verbose: bool = False,

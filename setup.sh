@@ -12,6 +12,11 @@
 echo "Installing seva dependencies..."
 pip install -e .
 
+git submodule update --init --recursive
+
+# Install pycolmap dependencies
+pip install -e third_party/pycolmap
+
 # Install dust3r dependencies for demo (our model is not dependent on it).
 echo "Installing dust3r dependencies (only for demo)..."
 pushd third_party/dust3r

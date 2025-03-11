@@ -68,7 +68,7 @@ with (
 #     adm_in_channels=None,
 #     use_temporal_resblock=True,
 #     disable_temporal_crossattention=False,
-#     time_mix_config={"target": "stableviews._sgm_impl.SkipConnect"},
+#     time_mix_config={"target": "seva._sgm_impl.SkipConnect"},
 #     time_mix_legacy=True,
 #     max_ddpm_temb_period=10000,
 #     replicate_time_mix_bug=False,
