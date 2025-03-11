@@ -756,7 +756,7 @@ def chunk_input_and_test(
         if "img2trajvid" in task:
             assert (
                 list(range(len(gt_input_inds))) == gt_input_inds
-            ), "`img2trajvid` task should put `gt_input_inds` at start."
+            ), "`img2trajvid` task should put `gt_input_inds` in start."
             input_c2ws = input_c2ws[
                 [ind for ind in range(M) if ind not in gt_input_inds]
             ]
@@ -1111,7 +1111,7 @@ class GradioTrackedSampler(EulerEDMSampler):
 
 
 def create_samplers(
-    guider_types: list[int],
+    guider_types: int | list[int],
     discretization,
     num_frames: list[int] | None,
     num_steps: int,
@@ -1124,6 +1124,8 @@ def create_samplers(
         2: MultiviewTemporalCFG,
     }
     samplers = []
+    if not isinstance(guider_types, (list, tuple)):
+        guider_types = [guider_types]
     for i, guider_type in enumerate(guider_types):
         if guider_type not in guider_mapping:
             raise ValueError(
@@ -1307,7 +1309,9 @@ def do_sample(
             "K": value_dict["K"].to("cuda"),
             "input_frame_mask": value_dict["cond_frames_mask"].to("cuda"),
         }
-
+        if global_pbar is not None:
+            additional_sampler_inputs["global_pbar"] = global_pbar
+        
         shape = (math.prod(num_samples), C, H // F, W // F)
         randn = torch.randn(shape).to("cuda")
 
@@ -1325,7 +1329,6 @@ def do_sample(
             cond=c,
             uc=uc,
             verbose=verbose,
-            global_pbar=global_pbar,
             **additional_sampler_inputs,
         )
         unload_model(model)
@@ -1616,7 +1619,11 @@ def run_one_scene(
                 C,
                 F,
                 T=len(curr_imgs),
-                cfg=options["cfg"][0],
+                cfg=(
+                    options["cfg"][0]
+                    if isinstance(options["cfg"], (list, tuple))
+                    else options["cfg"]
+                ),
                 **{k: options[k] for k in options if k not in ["cfg", "T"]},
             )
             samples = decode_output(
@@ -1792,7 +1799,11 @@ def run_one_scene(
                 W,
                 C,
                 F,
-                cfg=options["cfg"][0],
+                cfg=(
+                    options["cfg"][0]
+                    if isinstance(options["cfg"], (list, tuple))
+                    else options["cfg"]
+                ),
                 T=T_first_pass,
                 global_pbar=first_pass_pbar,
                 **{k: options[k] for k in options if k not in ["cfg", "T", "sampler"]},
@@ -1931,7 +1942,12 @@ def run_one_scene(
                 C,
                 F,
                 T=T_second_pass,
-                cfg=options["cfg"][1],
+                cfg=(
+                    options["cfg"][1]
+                    if isinstance(options["cfg"], (list, tuple))
+                    and len(options["cfg"]) > 1
+                    else options["cfg"]
+                ),
                 global_pbar=second_pass_pbar,
                 **{k: options[k] for k in options if k not in ["cfg", "T", "sampler"]},
             )

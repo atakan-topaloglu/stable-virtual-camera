@@ -426,7 +426,7 @@ class SevaRenderer(object):
             "input_indices": input_indices,
             "prior_indices": anchor_indices,
         }
-        # Create camera conditioning (K is unnormalized).
+        # Create camera conditioning (K is normalized).
         Ks_ori = torch.cat([input_Ks, target_Ks], 0)
         Ks_ori = Ks_ori * Ks_ori.new_tensor([W, H, 1])[:, None]
         camera_cond = {
