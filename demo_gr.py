@@ -404,18 +404,16 @@ class SevaRenderer(object):
             num_inputs + num_targets - 1,
             num_anchors,
         ).tolist()
-        anchor_c2ws = all_c2ws[
-            anchor_indices
-            .round()
-            .astype(np.int64)
-            .tolist()
-        ]
-        anchor_Ks = all_Ks[
-            anchor_indices
-            .round()
-            .astype(np.int64)
-            .tolist()
-        ]
+        anchor_c2ws = all_c2ws[[
+            round(ind)
+            for ind 
+            in anchor_indices
+        ]]
+        anchor_Ks = all_Ks[[
+            round(ind)
+            for ind 
+            in anchor_indices
+        ]]
         # Create image conditioning.
         all_imgs_np = (
             F.pad(input_imgs, (0, 0, 0, 0, 0, 0, 0, num_targets), value=0.0).numpy()

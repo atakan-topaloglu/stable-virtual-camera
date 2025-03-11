@@ -248,6 +248,7 @@ def load_img_and_K(
 def transform_img_and_K(
     image: torch.Tensor,
     size: Union[int, Tuple[int, int]],
+    scale: float = 1.0,
     center: Tuple[float, float] = (0.5, 0.5),
     K: torch.Tensor | None = None,
     size_stride: int = 1,
@@ -283,13 +284,14 @@ def transform_img_and_K(
         )
         (rh, rw) = [int(np.ceil(rfs * s)) for s in (h, w)]
 
+    rh, rw = int(rh / scale), int(rw / scale)
     image = torch.nn.functional.interpolate(
         image, (rh, rw), mode="area", antialias=False
     )
 
+    cy_center = int(center[1] * image.shape[-2])
+    cx_center = int(center[0] * image.shape[-1])
     if mode != "pad":
-        cy_center = int(center[1] * image.shape[-2])
-        cx_center = int(center[0] * image.shape[-1])
         ct = max(0, cy_center - H // 2)
         cl = max(0, cx_center - W // 2)
         ct = min(ct, image.shape[-2] - H)
@@ -297,20 +299,10 @@ def transform_img_and_K(
         image = TF.crop(image, top=ct, left=cl, height=H, width=W)
         pl, pt = 0, 0
     else:
-        if H < W:
-            pl, pt, pr, pb = (
-                math.floor((W - H) / 2),
-                0,
-                math.ceil((W - H) / 2),
-                0,
-            )
-        else:
-            pl, pt, pr, pb = (
-                0,
-                math.floor((H - W) / 2),
-                0,
-                math.ceil((H - W) / 2),
-            )
+        pt = max(0, H // 2 - cy_center)
+        pl = max(0, W // 2 - cx_center)
+        pb = max(0, H - pt - image.shape[-2])
+        pr = max(0, W - pl - image.shape[-1])
         image = TF.pad(
             image,
             [pl, pt, pr, pb],
@@ -1385,6 +1377,11 @@ def run_one_scene(
                         if i in image_cond["input_indices"]
                         else options.get("transform_target", "crop")
                     ),
+                    scale=(
+                        1.0
+                        if i in image_cond["input_indices"]
+                        else options.get("transform_scale", 1.0)
+                    ),
                 )
             else:
                 downsample = 3
@@ -1401,6 +1398,11 @@ def run_one_scene(
                         options.get("transform_input", "crop")
                         if i in image_cond["input_indices"]
                         else options.get("transform_target", "crop")
+                    ),
+                    scale=(
+                        1.0
+                        if i in image_cond["input_indices"]
+                        else options.get("transform_scale", 1.0)
                     ),
                 )
                 version_dict["W"] = W = img.shape[-1]
@@ -1448,6 +1450,9 @@ def run_one_scene(
                 mode=options.get(
                     "transform_target", "crop"
                 ),  # mode for prior is always same as target
+                scale=options.get(
+                    "transform_scale", 1.0
+                ),  # scale for prior is always same as target
             )
             prior_k = prior_k[0]
             prior_k[0] /= W
