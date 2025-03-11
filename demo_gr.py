@@ -425,7 +425,6 @@ class SevaRenderer(object):
             "img": all_imgs_np,
             "input_indices": input_indices,
             "prior_indices": anchor_indices,
-            "target_indices": target_indices,
         }
         # Create camera conditioning (K is unnormalized).
         Ks_ori = torch.cat([input_Ks, target_Ks], 0)
@@ -445,7 +444,6 @@ class SevaRenderer(object):
         options["log_snr_shift"] = 2.4
         options["guider_types"] = [1, 2]
         options["cfg"] = [float(cfg), 2.0]
-        options["use_traj_prior"] = True
         options["camera_scale"] = camera_scale
         options["num_steps"] = num_steps
         options["encoding_t"] = 1
@@ -474,19 +472,18 @@ class SevaRenderer(object):
             )[1]
         )
         # Get number of second pass chunks.
-        prior_indices = anchor_indices.copy()
-        prior_argsort = np.argsort(input_indices + prior_indices).tolist()
-        prior_indices = np.array(input_indices + prior_indices)[prior_argsort].tolist()
-        gt_input_inds = [prior_argsort.index(i) for i in range(input_c2ws.shape[0])]
-        traj_prior_c2ws = torch.cat([input_c2ws, anchor_c2ws], dim=0)[prior_argsort]
+        anchor_argsort = np.argsort(input_indices + anchor_indices).tolist()
+        anchor_indices = np.array(input_indices + anchor_indices)[anchor_argsort].tolist()
+        gt_input_inds = [anchor_argsort.index(i) for i in range(input_c2ws.shape[0])]
+        anchor_c2ws = torch.cat([input_c2ws, anchor_c2ws], dim=0)[anchor_argsort]
         T_second_pass = T[1] if isinstance(T, (list, tuple)) else T
         chunk_strategy = options.get("chunk_strategy", "nearest")
         num_chunks_1 = len(
             chunk_input_and_test(
                 T_second_pass,
-                traj_prior_c2ws,
+                anchor_c2ws,
                 target_c2ws,
-                prior_indices,
+                anchor_indices,
                 target_indices,
                 options=options,
                 task=task,
