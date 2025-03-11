@@ -10,6 +10,7 @@ dependencies = [
     "roma",
     "viser",
     "tyro",
+    "fire",
     "ninja",
     "gradio",
     "einops",
