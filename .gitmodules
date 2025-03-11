@@ -1,3 +1,6 @@
 [submodule "third_party/dust3r"]
 	path = third_party/dust3r
 	url = https://github.com/jensenstability/dust3r
+[submodule "third_party/pycolmap"]
+	path = third_party/pycolmap
+	url = https://github.com/jensenstability/pycolmap
