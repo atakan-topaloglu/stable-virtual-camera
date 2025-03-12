@@ -1,12 +1,12 @@
 #!/bin/bash
 
-# if [ ! -d "venv" ]; then
-#     echo "Creating python3.10 virtual environment in 'venv'..."
-#     python3.10 -m venv venv
-# fi
+if [ ! -d "venv" ]; then
+    echo "Creating python3.10 virtual environment in 'venv'..."
+    python3.10 -m venv venv
+fi
 
-# echo "Activating the virtual environment..."
-# source venv/bin/activate
+echo "Activating the virtual environment..."
+source venv/bin/activate
 
 # Install seva dependencies.
 echo "Installing seva dependencies..."
