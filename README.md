@@ -11,7 +11,7 @@
 # :tada: News 
 - March 2025 - `Seva` is out everywhere.
 
-# Installation
+# :wrench: Installation
 
 To setup the virtual environment and install all necessary model dependencies, simply run:
 ```python
@@ -21,11 +21,11 @@ pip install -e .
 Check [INSTALL_GUIDE.md](INSTALL_GUIDE.md) for other dependencies if you want to further use the provided demos.
 
 
-# Demo Usage
+# :open_book: Usage
 
 We provide two demos for you to interative with `Seva`. 
 
-### Gradio demo
+### :rocket: Gradio demo
 
 This gradio demo is a GUI interface that requires no expertised knowledge, suitable for general users. Simply run 
 ```
@@ -34,7 +34,7 @@ python demo_gr.py
 
 For a more detailed guide, follow [GR_GUIDE.md](GR_GUIDE.md)
 
-### CLI demo
+### :computer: CLI demo
 This cli demo allows you to pass in more options and control the model in a fine-grained way, suitable for power users and academic researchers. An examplar command line looks as simple as 
 ```
 python demo.py --data_path <data_path> [additional arguments]
@@ -42,7 +42,7 @@ python demo.py --data_path <data_path> [additional arguments]
 
 For a more detailed guide, follow [CLI_GUIDE.md](CLI_GUIDE.md)
 
-# Citing
+# :books: Citing
 If you find this repository useful, please consider giving a star :star: and citation.
 ```
 @article{zhou2025stable,
