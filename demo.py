@@ -293,9 +293,9 @@ def parse_task(
 
 
 def main(
-    task,
     data_path,
     data_items=None,
+    task="img2img",
     save_subdir="",
     H=None,
     W=None,
