@@ -1,15 +1,3 @@
-```python
-# For demo.
-pip install -e .
-
-# Or for development.
-pip install -e ".[dev]"
-pre-commit install
-
-# Install the torch nightly version for faster JIT (speed up sampling by 2x in our testing).
-pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu118
-```
-
 # Stable Virtual Camera: Generative View Synthesis with Diffusion Models
 
 <a href="https://arxiv.org/abs/0000.0000"><img src="https://img.shields.io/badge/Arxiv-2408.00653-B31B1B.svg"></a> <a href="https://huggingface.co/stabilityai/stable-virtual-camera"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Model_Card-Huggingface-orange"></a> <a href="https://huggingface.co/spaces/stabilityai/stable-virtual-camera"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Gradio%20Demo-Huggingface-orange"></a>
@@ -32,7 +20,7 @@ pip install -e .
 pip install -e ".[dev]"
 pre-commit install
 
-# Install the torch nightly version for faster JIT via. torch.compile (speed up sampling by 2x in our testing).
+# [OPTIONAL] Install the torch nightly version for faster JIT via. torch.compile (speed up sampling by 2x in our testing).
 pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu118
 ```
 
