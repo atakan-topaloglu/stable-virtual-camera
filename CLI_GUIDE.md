@@ -1,7 +1,5 @@
 # :computer: CLI Demo
 
-Before diving into the command lines, we introduce `Task` (specified by `--task <task>`) to bucket different usage cases depending on the data constraints in input and output domains (e.g., if the ordering is available).
-
 ## One-Line Command
 This cli demo allows you to pass in more options and control the model in a fine-grained way, suitable for power users and academic researchers. An examplar command line looks as simple as 
 ```
@@ -13,6 +11,9 @@ We discuss here first some key attributes:
 - `Resolution and Aspect-Ratio`: Default image preprocessing include center cropping. All input and output are square images of size $576\times 576$. To overwrite, the code support to pass in `--W <W> --H <H>` directly. We recommend passing in `--L_short 576` such that the aspect-ratio of original image is kept while the shortest side will be resized to $576$.
 
 ## Task
+
+Before diving into the command lines, we introduce `Task` (specified by `--task <task>`) to bucket different usage cases depending on the data constraints in input and output domains (e.g., if the ordering is available).
+
 | Task | Type of NVS | Format of `<data_path>` | Target Views Sorted? | Input and Target Views Sorted? | Recommended Usage |
 |:--------:|:--------:|:--------:|:--------:|:--------:| :--------:| 
 | `img2img`   | set NVS     | folder (parsable by `ReconfusionParser`)     | :x:     | :x:     | evaluation, benchmarking |
