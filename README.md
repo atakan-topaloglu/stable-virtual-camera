@@ -1,16 +1,15 @@
-# Stable Virtual Camera (Seva)
+# Stable Virtual Camera
 
 <a href=""><img src="https://img.shields.io/badge/%F0%9F%8F%A0
-%20%20Project%20Page-gray.svg"></a> 
-<a href="https://arxiv.org/abs/0000.0000"><img src="https://img.shields.io/badge/%F0%9F%93%84
+%20%20Project%20Page-gray.svg"></a> <a href="https://arxiv.org/abs/0000.0000"><img src="https://img.shields.io/badge/%F0%9F%93%84
 %20%20arXiv-2408.00653-B31B1B.svg"></a> <a href=""><img src="https://img.shields.io/badge/%F0%9F%93%83
 %20%20Blog-Stability%20AI-red.svg"></a>  <a href="https://huggingface.co/stabilityai/stable-virtual-camera"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Model_Card-Huggingface-orange"></a> <a href="https://huggingface.co/spaces/stabilityai/stable-virtual-camera"><img src="https://img.shields.io/badge/%F0%9F%9A%80%20%20Gradio%20Demo-Huggingface-orange"></a>
 
-`Stable Virtual Camera (Seva)` is a generlist multi-view diffusion model generating 3D consistent novel views of a scene, given any number of input views and target cameras. 
+`Stable Virtual Camera (Seva)` is a generalist diffusion model for Novel View Synthesis (NVS), generating 3D consistent novel views of a scene, given any number of input views and target cameras. 
 
 
-# ::tada:: News 
-- March 2025 - Seva is out everywhere.
+# :tada: News 
+- March 2025 - `Seva` is out everywhere.
 
 # Installation
 
@@ -24,21 +23,19 @@ Check [INSTALL_GUIDE.md](INSTALL_GUIDE.md) for other dependencies if you want to
 
 # Demo Usage
 
-We provide two demos for you to interative with Seva: 
-- `demo_gr.py`: This gradio demo is a GUI interface that requires no expertised knowledge, suitable for general users.
-- `demo.py`: This cli demo allows you to pass in more options and control the model in a fine-grained way, suitable for power users and academic researchers, 
+We provide two demos for you to interative with `Seva`. 
 
-### Gradio Demo
+### Gradio demo
 
-For running the gradio demo, simply run 
+This gradio demo is a GUI interface that requires no expertised knowledge, suitable for general users. Simply run 
 ```
 python demo_gr.py
 ```
 
 For a more detailed guide, follow [GR_GUIDE.md](GR_GUIDE.md)
 
-### CLI Demo
-For running the command-line script, refer to `demo.py` file and an examplar command line looks as simple as 
+### CLI demo
+This cli demo allows you to pass in more options and control the model in a fine-grained way, suitable for power users and academic researchers. An examplar command line looks as simple as 
 ```
 python demo.py --data_path <data_path> [additional arguments]
 ```
