@@ -1,6 +1,5 @@
 # :computer: CLI Demo
 
-## One-Line Command
 This cli demo allows you to pass in more options and control the model in a fine-grained way, suitable for power users and academic researchers. An examplar command line looks as simple as 
 ```
 python demo.py --data_path <data_path> [additional arguments]
@@ -145,7 +144,7 @@ python demo.py \
 
 - `--num_inputs <P>` is only necessary if there are multiple `<data_path>/train_test_split_*.json` files.
 - Default `cfg` should be set to `3`.
-- Default chunking strategy should be set to `interp` (instead of `interp-gt`, `interp-gt` is also supported but the results look very bad).
+- Default chunking strategy should be set to `interp` (instead of `interp-gt`, `interp-gt` is also supported but the results do not look good).
 - `T` can be overwritten by `--T <N>,21` (X being extended `T` for the first pass, and `21` being the default `T` for the second pass). `<N>` is dynamically decided now in the code but can also be manually updated. This is useful when you observe that there exist two very dissimilar adjacent anchors which make the interpolation in the second pass impossible. There exist two ways:
     - `--T 96,21`: this overwrites the `T` in the first pass to be exactly `96`.
     - `--num_prior_frames_ratio 1.2`: this enlarges T in the first pass dynamically to be `1.2`$\times$ larger.
