@@ -117,7 +117,8 @@ python demo.py \
 ```
 python demo.py \    
     --data_path <data_path> \
-    --task img2trajvid \                       
+    --task img2trajvid \
+    --num_inputs 2 \                       
     --cfg 3.0,2.0  \
     --use_traj_prior True \
     --chunk_strategy interp-gt
