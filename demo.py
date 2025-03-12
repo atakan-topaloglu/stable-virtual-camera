@@ -37,7 +37,7 @@ device = "cuda:0"
 
 # Constants.
 WORK_DIR = "work_dirs/demo"
-EXAMPLE_DIR = "/weka/home-jensen/projects/stable-research/.bak/demo-assets/"
+EXAMPLE_DIR = "/weka/home-jensen/stable-research/.bak/demo-assets/"
 if IS_TORCH_NIGHTLY:
     COMPILE = True
     os.environ["TORCHINDUCTOR_AUTOGRAD_CACHE"] = "1"

@@ -1,4 +1,4 @@
-# Installation
+# :wrench: Installation
 
 ### Model Dependencies
 ```python
@@ -12,8 +12,8 @@ To use the cli demo (`demo.py`) or the gradio demo (`demo_gr.py`), do the follow
 # Initialize and update submodules for demo.
 git submodule update --init --recursive
 
-# Install pycolmap dependencies for command-line demo (our model is not dependent on it).
-echo "Installing pycolmap (only for command-line demo)..."
+# Install pycolmap dependencies for cli demo (our model is not dependent on it).
+echo "Installing pycolmap (only for cli demo)..."
 pip install -e third_party/pycolmap
 
 # Install dust3r dependencies for gradio demo (our model is not dependent on it).

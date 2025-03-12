@@ -50,20 +50,20 @@ MAX_SESSIONS = 1
 EXAMPLE_DIR = "/admin/home-hangg/projects/stable-research/.bak/demo-assets/"
 EXAMPLE_MAP = [
     (
-        "/admin/home-hangg/projects/stable-research/.bak/demo-assets/nonsquare_1.png",
-        ["/admin/home-hangg/projects/stable-research/.bak/demo-assets/nonsquare_1.png"],
+        "/admin/home-hangg/projects/stable-research/.bak/demo_gr/nonsquare_1.png",
+        ["/admin/home-hangg/projects/stable-research/.bak/demo_gr/nonsquare_1.png"],
     ),
     (
-        "/admin/home-hangg/projects/stable-research/.bak/demo-assets/scene_1.png",
-        ["/admin/home-hangg/projects/stable-research/.bak/demo-assets/scene_1.png"],
+        "/admin/home-hangg/projects/stable-research/.bak/demo_gr/scene_1.png",
+        ["/admin/home-hangg/projects/stable-research/.bak/demo_gr/scene_1.png"],
     ),
     (
-        "/admin/home-hangg/projects/stable-research/.bak/demo-assets/scene_2_1.png",
+        "/admin/home-hangg/projects/stable-research/.bak/demo_gr/scene_2_1.png",
         [
-            "/admin/home-hangg/projects/stable-research/.bak/demo-assets/scene_2_1.png",
-            "/admin/home-hangg/projects/stable-research/.bak/demo-assets/scene_2_2.png",
-            "/admin/home-hangg/projects/stable-research/.bak/demo-assets/scene_2_3.png",
-            "/admin/home-hangg/projects/stable-research/.bak/demo-assets/scene_2_4.png",
+            "/admin/home-hangg/projects/stable-research/.bak/demo_gr/scene_2_1.png",
+            "/admin/home-hangg/projects/stable-research/.bak/demo_gr/scene_2_2.png",
+            "/admin/home-hangg/projects/stable-research/.bak/demo_gr/scene_2_3.png",
+            "/admin/home-hangg/projects/stable-research/.bak/demo_gr/scene_2_4.png",
         ],
     ),
 ]
