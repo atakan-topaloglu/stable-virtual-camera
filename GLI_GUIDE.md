@@ -2,7 +2,7 @@
 
 Before diving into the command lines, we introduce `Task` (specified by `--task <task>`) to bucket different usage cases depending on the data constraints in input and output domains (e.g., if the ordering is available).
 
-## One-line Command
+## One-Line Command
 This cli demo allows you to pass in more options and control the model in a fine-grained way, suitable for power users and academic researchers. An examplar command line looks as simple as 
 ```
 python demo.py --data_path <data_path> [additional arguments]
@@ -63,16 +63,16 @@ Next we go over all tasks and provide for each task an examplar command line.
 
 ```
 python demo.py \
+    --data_path <data_path> \
     --task img2img \
     --num_inputs 3 \ 
-    --data_path <data_path> \
     --video_save_fps 10
 ```
 
-- The above command works for the dataset without trajectory prior (e.g., DL3DV-140). When the trajectory prior is available given a benchmarking dataset, for example, `orbit` trajectory prior for the CO3D dataset, we use the `nearest-gt` chunking strategy by setting `--use_traj_prior True --traj_prior orbit --chunking_strategy nearest-gt --save_subdir  2pass_chunk-nearest-gt`. We find this leads to more 3D consistent results.
+- The above command works for the dataset without trajectory prior (e.g., DL3DV-140). When the trajectory prior is available given a benchmarking dataset, for example, `orbit` trajectory prior for the CO3D dataset, we use the `nearest-gt` chunking strategy by setting `--use_traj_prior True --traj_prior orbit --chunking_strategy nearest-gt`. We find this leads to more 3D consistent results.
 - For all the single-view conditioning test scenarios: we set `--camera_scale <camera_scale>` with `<camera_scale>` sweeping 20 different camera scales `0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9 1.0 1.1 1.2 1.3 1.4 1.5 1.6 1.7 1.8 1.9 2.0`.
-- For the single-view conditioning test scenario on the RealEstate10K dataset, we find increasing cfg is helpful: we additionally set `--cfg 6.0` (cfg is `2.0` by default).
-- For the evaluation on the semi-dense-view regime (i.e., DL3DV-140 and Tanks and Temples dataset) with `32` input views, we zero-shot extend `T` to fit all input and target views in one forward. Specifically, we set `--T 90` for the DL3DV-140 dataset and `--T 80` for the Tanks and Temples dataset.
+- In single-view regime for the RealEstate10K dataset, we find increasing `cfg` is helpful: we additionally set `--cfg 6.0` (`cfg` is `2.0` by default).
+- For the evaluation in semi-dense-view regime (i.e., DL3DV-140 and Tanks and Temples dataset) with `32` input views, we zero-shot extend `T` to fit all input and target views in one forward. Specifically, we set `--T 90` for the DL3DV-140 dataset and `--T 80` for the Tanks and Temples dataset.
 - For the evaluation on ViewCrafter split (including the RealEastate10K, CO3D, and Tanks and Temples dataset), we find zero-shot extending `T` to `25` to fit all input and target views in one forward is better. Also, the V split uses the original image resolutions: we therefore set `--T 25 --L_short 576`.
 
 
@@ -80,12 +80,11 @@ python demo.py \
 
 ```
 python demo.py \
+    --data_path <data_path> \
     --task img2vid \
     --num_inputs 3 \
-    --data_path <data_path> \
     --use_traj_prior True \
     --chunk_strategy interp \
-    --save_subdir 2pass_chunk-interp \
     --replace_or_include_input True
 ```
 
@@ -96,19 +95,18 @@ python demo.py \
 
 ```
 python demo.py \
+    --data_path <data_path> \
     --task img2trajvid_s-prob \
     --traj_prior orbit \
-    --data_path <data_path> \
     --cfg 4.0,2.0 \
     --guider 1,2 \
     --num_targets 111 \
     --L_short 576 \
     --use_traj_prior True \
-    --chunk_strategy interp\
-    --save_subdir 2pass_chunk-interp_cfg-4+2-gd-1+2_num-111
+    --chunk_strategy interp
 ```
 
-- Default cfg is dependent on `traj_prior`. 
+- Default `cfg` should be adusted according to `traj_prior`. 
 - Default chunking strategy is `interp`. 
 - Default guider is `--guider 1,2` (instead of `1`, `1` still works but `1,2` is slightly better).
 
@@ -118,33 +116,31 @@ python demo.py \
 
 ```
 python demo.py \    
-    --task img2trajvid \                       
     --data_path <data_path> \
+    --task img2trajvid \                       
     --cfg 3.0,2.0  \
     --use_traj_prior True \
-    --chunk_strategy interp-gt \
-    --save_subdir 2pass_chunk-interp-gt_cfg-3+2 
+    --chunk_strategy interp-gt
 ```
 
-- Default cfg should be set to `3,2` (`3` being cfg for the first pass, and `2` being the cfg for the second pass). Try to increase the cfg for the first pass from `3` to higher values if you observe blurry areas (usually happens for harder scenes with a fair amount of unseen regions).
+- Default `cfg` should be set to `3,2` (`3` being `cfg` for the first pass, and `2` being the `cfg` for the second pass). Try to increase the `cfg` for the first pass from `3` to higher values if you observe blurry areas (usually happens for harder scenes with a fair amount of unseen regions).
 - Default chunking strategy should be set to `interp+gt` (instead of `interp`, `interp` can work but usually a bit worse).
-- The `--chunk_strategy_first_pass` is default as `gt-nearest`. So it can automatically adapt when $P$ is large (up to a thousand frames).
+- The `--chunk_strategy_first_pass` is set as `gt-nearest` by default. So it can automatically adapt when $P$ is large (up to a thousand frames).
 
 
 ### Semi-dense-view regime ($P>9$)
 ```
 python demo.py \
+    --data_path <data_path> \
     --task img2trajvid \
     --num_inputs 32 \
-    --data_path <data_path> \
     --cfg 3.0  \
     --L_short 576 \
     --use_traj_prior True \
-    --chunk_strategy interp \
-    --save_subdir 2pass_chunk-interp_cfg-3
+    --chunk_strategy interp
 ```
-- Default cfg should be set to `3` (instead of `3,2`).
+- Default `cfg` should be set to `3`.
 - Default chunking strategy should be set to `interp` (instead of `interp-gt`, `interp-gt` is also supported but the results look very bad).
-- `T` will be `N,21` (X being extended `T` for the first pass, and `21` being the default `T` for the second pass). `N` is dynamically decided now. `N` can be manually overwritten in two ways. This is useful when you observe that there exist two very dissimilar adjacent anchors which make the interpolation in the second pass impossible.
-    - `--T 96,21`: this overwrites the `T` in first pass to be exactly `96`.
-    - `--num_prior_frames_ratio 1.2`: this enlarges T dynamically decided to be `1.2`x larger.
+- `T` can be overwritten by `--T <N>,21` (X being extended `T` for the first pass, and `21` being the default `T` for the second pass). `<N>` is dynamically decided now in the code but can also be manually updated. This is useful when you observe that there exist two very dissimilar adjacent anchors which make the interpolation in the second pass impossible. There exist two ways:
+    - `--T 96,21`: this overwrites the `T` in the first pass to be exactly `96`.
+    - `--num_prior_frames_ratio 1.2`: this enlarges T in the first pass dynamically to be `1.2`$\times$ larger.
