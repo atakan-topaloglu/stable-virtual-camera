@@ -158,7 +158,7 @@ class ConstantScaleRule(object):
 
 
 class MultiviewScaleRule(object):
-    def __init__(self, min_scale: float = 1.2):
+    def __init__(self, min_scale: float = 1.0):
         self.min_scale = min_scale
 
     def __call__(
@@ -243,8 +243,9 @@ class VanillaCFG(object):
 
 
 class MultiviewCFG(VanillaCFG):
-    def __init__(self):
-        self.scale_rule = MultiviewScaleRule()
+    def __init__(self, cfg_min: float = 1.0):
+        self.scale_min = cfg_min
+        self.scale_rule = MultiviewScaleRule(min_scale=cfg_min)
         self.scale_schedule = ConstantScaleSchedule()
         self.guidance = ConstantGuidance()
 
@@ -265,8 +266,8 @@ class MultiviewCFG(VanillaCFG):
 
 
 class MultiviewTemporalCFG(MultiviewCFG):
-    def __init__(self, num_frames: int):
-        super().__init__()
+    def __init__(self, *args, num_frames: int, **kwargs):
+        super().__init__(*args, **kwargs)
 
         self.num_frames = num_frames
         distance_matrix = (
@@ -291,8 +292,7 @@ class MultiviewTemporalCFG(MultiviewCFG):
             + (~input_frame_mask[:, None]) * self.num_frames
         ).min(-1)[0]
         min_distance = min_distance / min_distance.max(-1, keepdim=True)[0].clamp(min=1)
-        min_scale = self.scale_rule.min_scale
-        scale = min_distance * (scale - min_scale) + min_scale
+        scale = min_distance * (scale - self.scale_min) + self.scale_min
         scale = rearrange(scale, "b t ... -> (b t) ...")
         scale = append_dims(scale, x.ndim)
         return super().__call__(x, sigma, scale, c2w, K, input_frame_mask.flatten(0, 1))
