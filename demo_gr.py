@@ -444,6 +444,7 @@ class SevaRenderer(object):
         options["cfg"] = [float(cfg), 2.0]
         options["camera_scale"] = camera_scale
         options["num_steps"] = num_steps
+        options["cfg_min"] = 1.2
         options["encoding_t"] = 1
         options["decoding_t"] = 1
         assert session_hash in ABORT_EVENTS

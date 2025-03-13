@@ -312,15 +312,18 @@ def main(
         VERSION_DICT["T"] = [int(t) for t in T.split(",")] if isinstance(T, str) else T
 
     options = VERSION_DICT["options"]
+    options["chunk_strategy"] = "interp"
     options["video_save_fps"] = 30.0
     options["beta_linear_start"] = 5e-6
     options["log_snr_shift"] = 2.4
     options["guider_types"] = 1
     options["cfg"] = 2.0
-    options["num_inputs"] = None
+    options["camera_scale"] = 2.0
     options["num_steps"] = 50
+    options["cfg_min"] = 1.2
     options["encoding_t"] = 1
     options["decoding_t"] = 1
+    options["num_inputs"] = None
     options["seed"] = 23
     options.update(overwrite_options)
     

@@ -1107,6 +1107,7 @@ def create_samplers(
     discretization,
     num_frames: list[int] | None,
     num_steps: int,
+    cfg_min: float = 1.0,
     device: str | torch.device = "cuda",
     abort_event: threading.Event | None = None,
 ):
@@ -1124,11 +1125,14 @@ def create_samplers(
                 f"Invalid guider type {guider_type}. Must be one of {list(guider_mapping.keys())}"
             )
         guider_cls = guider_mapping[guider_type]
-        if guider_type != 2:
-            guider = guider_cls()
-        else:
-            assert num_frames is not None
-            guider = guider_cls(num_frames[i])
+        guider_args = ()
+        if guider_type > 0:
+            guider_args += (cfg_min,)
+            if guider_type == 2:
+                assert num_frames is not None
+                guider_args += (num_frames[i],)
+        guider = guider_cls(*guider_args)
+        
         if abort_event is not None:
             sampler = GradioTrackedSampler(
                 abort_event,
@@ -1569,8 +1573,8 @@ def run_one_scene(
                 )
             ]
             value_dict = get_value_dict(
-                curr_imgs,
-                curr_imgs_clip,
+                curr_imgs.to("cuda"),
+                curr_imgs_clip.to("cuda"),
                 curr_input_sels
                 + [
                     sel
@@ -1598,6 +1602,7 @@ def run_one_scene(
                 discretization,
                 [len(curr_imgs)],
                 options["num_steps"],
+                options["cfg_min"],
                 abort_event=abort_event,
             )
             assert len(samplers) == 1
@@ -1756,8 +1761,8 @@ def run_one_scene(
                 )
             ]
             value_dict = get_value_dict(
-                curr_imgs,
-                curr_imgs_clip,
+                curr_imgs.to("cuda"),
+                curr_imgs_clip.to("cuda"),
                 curr_input_sels,
                 curr_c2ws,
                 curr_Ks,
@@ -1769,6 +1774,7 @@ def run_one_scene(
                 discretization,
                 [T_first_pass, T_second_pass],
                 options["num_steps"],
+                options["cfg_min"],
                 abort_event=abort_event,
             )
             samples = do_sample(
@@ -1912,8 +1918,8 @@ def run_one_scene(
                 )
             ]
             value_dict = get_value_dict(
-                curr_imgs,
-                curr_imgs_clip,
+                curr_imgs.to("cuda"),
+                curr_imgs_clip.to("cuda"),
                 curr_prior_sels,
                 curr_c2ws,
                 curr_Ks,
