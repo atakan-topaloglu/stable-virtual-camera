@@ -14,7 +14,8 @@
 <br>
 [Philip Torr](https://eng.ox.ac.uk/people/philip-torr/), [Christian Rupprecht](https://chrirupp.github.io/), [Varun Jampani](https://varunjampani.github.io/)
 <br>
-<sub>[Stability AI](https://stability.ai/), [University of Oxford](https://www.robots.ox.ac.uk/~vgg/), [UC Berkeley](https://bair.berkeley.edu/)</sub>
+<br>
+[Stability AI](https://stability.ai/), [University of Oxford](https://www.robots.ox.ac.uk/~vgg/), [UC Berkeley](https://bair.berkeley.edu/)
 </div>
 
 <p align="center">
@@ -83,7 +84,7 @@ For users interested in benchmarking NVS models using command lines, check [`ben
 
 # :question: Q&A
 
-- Training script? See issue https://github.com/Stability-AI/stable-virtual-camera/issues/27, https://github.com/Stability-AI/stable-virtual-camera/issues/42.
+- Training script? See issue https://github.com/Stability-AI/stable-virtual-camera/issues/27, https://github.com/Stability-AI/stable-virtual-camera/issues/42. [@nviolante25](https://www.github.com/nviolante25) has made a pull request (https://github.com/Stability-AI/stable-virtual-camera/pull/51) based on the dicussions.
 - License for the output? See issue https://github.com/Stability-AI/stable-virtual-camera/issues/26. The output follows the same non-commercial license.
 
 # :books: Citing
