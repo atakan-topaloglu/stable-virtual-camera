@@ -1,3 +1,6 @@
 [submodule "third_party/dust3r"]
 	path = third_party/dust3r
 	url = https://github.com/jensenstability/dust3r
+[submodule "third_party/vggt"]
+	path = third_party/vggt
+	url = https://github.com/atakan-topaloglu/vggt_orig.git
