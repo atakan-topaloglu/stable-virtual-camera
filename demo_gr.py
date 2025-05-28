@@ -107,6 +107,7 @@ else:
 # Shared global variables across sessions.
 DUST3R = Dust3rPipeline(device=device)  # type: ignore
 MODEL = SGMWrapper(load_model(device="cpu", verbose=True).eval()).to(device)
+# MODEL = SGMWrapper(load_model(pretrained_model_name_or_path="/home/atopaloglu21/stable-virtual-camera/model.safetensors", device="cpu", verbose=True).eval()).to(device)
 AE = AutoEncoder(chunk_size=1).to(device)
 CONDITIONER = CLIPConditioner().to(device)
 DISCRETIZATION = DDPMDiscretization()
@@ -702,33 +703,33 @@ class SevaRenderer(object):
 
 # This is basically a copy of the original `networking.setup_tunnel` function,
 # but it also returns the tunnel object for proper cleanup.
-def setup_tunnel(
-    local_host: str, local_port: int, share_token: str, share_server_address: str | None
-) -> tuple[str, Tunnel]:
-    share_server_address = (
-        networking.GRADIO_SHARE_SERVER_ADDRESS
-        if share_server_address is None
-        else share_server_address
-    )
-    if share_server_address is None:
-        try:
-            response = httpx.get(networking.GRADIO_API_SERVER, timeout=30)
-            payload = response.json()[0]
-            remote_host, remote_port = payload["host"], int(payload["port"])
-            certificate = payload["root_ca"]
-            Path(CERTIFICATE_PATH).parent.mkdir(parents=True, exist_ok=True)
-            with open(CERTIFICATE_PATH, "w") as f:
-                f.write(certificate)
-        except Exception as e:
-            raise RuntimeError(
-                "Could not get share link from Gradio API Server."
-            ) from e
-    else:
-        remote_host, remote_port = share_server_address.split(":")
-        remote_port = int(remote_port)
-    tunnel = Tunnel(remote_host, remote_port, local_host, local_port, share_token)
-    address = tunnel.start_tunnel()
-    return address, tunnel
+# def setup_tunnel(
+#     local_host: str, local_port: int, share_token: str, share_server_address: str | None
+# ) -> tuple[str, Tunnel]:
+#     share_server_address = (
+#         networking.GRADIO_SHARE_SERVER_ADDRESS
+#         if share_server_address is None
+#         else share_server_address
+#     )
+#     if share_server_address is None:
+#         try:
+#             response = httpx.get(networking.GRADIO_API_SERVER, timeout=30)
+#             payload = response.json()[0]
+#             remote_host, remote_port = payload["host"], int(payload["port"])
+#             certificate = payload["root_ca"]
+#             Path(CERTIFICATE_PATH).parent.mkdir(parents=True, exist_ok=True)
+#             with open(CERTIFICATE_PATH, "w") as f:
+#                 f.write(certificate)
+#         except Exception as e:
+#             raise RuntimeError(
+#                 "Could not get share link from Gradio API Server."
+#             ) from e
+#     else:
+#         remote_host, remote_port = share_server_address.split(":")
+#         remote_port = int(remote_port)
+#     tunnel = Tunnel(remote_host, remote_port, local_host, local_port, share_token)
+#     address = tunnel.start_tunnel()
+#     return address, tunnel
 
 
 def set_bkgd_color(server: viser.ViserServer | viser.ClientHandle):
@@ -749,26 +750,31 @@ def start_server_and_abort_event(request: gr.Request):
         set_bkgd_color(client)
 
     print(f"Starting server {server.get_port()}")
-    server_url, tunnel = setup_tunnel(
-        local_host=server.get_host(),
-        local_port=server.get_port(),
-        share_token=secrets.token_urlsafe(32),
-        share_server_address=None,
-    )
-    SERVERS[request.session_hash] = (server, tunnel)
-    if server_url is None:
-        raise gr.Error(
-            "Failed to get a viewport URL. Please check your network connection."
-        )
-    # Give it enough time to start.
+    remote_viser_port = server.get_port()
+    print(f"Starting Viser server on remote port: {remote_viser_port}")
+    iframe_viser_url = "http://localhost:8081" 
+
+    SERVERS[request.session_hash] = (server, None) # Store server, no tunnel object
+
+    # server_url, tunnel = setup_tunnel(
+    #     local_host=server.get_host(),
+    #     local_port=server.get_port(),
+    #     share_token=secrets.token_urlsafe(32),
+    #     share_server_address=None,
+    # )
     time.sleep(1)
+    # if server_url is None:
+    #     raise gr.Error(
+    #         "Failed to get a viewport URL. Please check your network connection."
+    #     )
+    # # Give it enough time to start.
 
     ABORT_EVENTS[request.session_hash] = threading.Event()
 
     return (
         SevaRenderer(server),
         gr.HTML(
-            f'<iframe src="{server_url}" style="display: block; margin: auto; width: 100%; height: min(60vh, 600px);" frameborder="0"></iframe>',
+            f'<iframe src="{iframe_viser_url}" style="display: block; margin: auto; width: 100%; height: min(60vh, 600px);" frameborder="0"></iframe>',
             container=True,
         ),
         request.session_hash,
@@ -777,13 +783,15 @@ def start_server_and_abort_event(request: gr.Request):
 
 def stop_server_and_abort_event(request: gr.Request):
     if request.session_hash in SERVERS:
-        print(f"Stopping server {request.session_hash}")
-        server, tunnel = SERVERS.pop(request.session_hash)
-        server.stop()
-        tunnel.kill()
+        print(f"Stopping server for session {request.session_hash}")
+        server, tunnel_obj = SERVERS.pop(request.session_hash) # tunnel_obj will be None
+        if server:
+            server.stop()
+        if tunnel_obj: # This check is good practice, though tunnel_obj is None now
+            tunnel_obj.kill()
 
     if request.session_hash in ABORT_EVENTS:
-        print(f"Setting abort event {request.session_hash}")
+        print(f"Setting abort event for session {request.session_hash}")
         ABORT_EVENTS[request.session_hash].set()
         # Give it enough time to abort jobs.
         time.sleep(5)
@@ -865,11 +873,11 @@ def main(server_port: int | None = None, share: bool = True):
                                 label="Input",
                                 height=200,
                             )
-                            _ = gr.Examples(
-                                examples=sorted(glob("assets/basic/*")),
-                                inputs=[input_imgs],
-                                label="Example",
-                            )
+                            # _ = gr.Examples(
+                            #     examples=sorted(glob("assets/basic/*")),
+                            #     inputs=[input_imgs],
+                            #     label="Example",
+                            # )
                             chunk_strategy = gr.Dropdown(
                                 ["interp", "interp-gt"],
                                 label="Chunk strategy",
@@ -1241,9 +1249,10 @@ def main(server_port: int | None = None, share: bool = True):
         app.unload(stop_server_and_abort_event)
 
     app.queue(max_size=5).launch(
-        share=share,
+        share=False,
         server_port=server_port,
         show_error=True,
+        server_name="0.0.0.0",
         allowed_paths=[WORK_DIR],
         # Badget rendering will be broken otherwise.
         ssr_mode=False,
@@ -1251,4 +1260,5 @@ def main(server_port: int | None = None, share: bool = True):
 
 
 if __name__ == "__main__":
+    Path(WORK_DIR).mkdir(parents=True, exist_ok=True)   
     tyro.cli(main)
