@@ -43,11 +43,12 @@ from seva.gui import define_gui
 from seva.model import SGMWrapper
 from seva.modules.autoencoder import AutoEncoder
 from seva.modules.conditioner import CLIPConditioner
-from seva.modules.preprocessor import Dust3rPipeline
+from seva.modules.preprocessor import Dust3rPipeline, VggtPipeline
 from seva.sampling import DDPMDiscretization, DiscreteDenoiser
 from seva.utils import load_model
 
 device = "cuda:0"
+print(device)
 
 
 # Constants.
@@ -106,6 +107,7 @@ else:
 
 # Shared global variables across sessions.
 DUST3R = Dust3rPipeline(device=device)  # type: ignore
+VGGT = VggtPipeline(device=device)
 MODEL = SGMWrapper(load_model(device="cpu", verbose=True).eval()).to(device)
 # MODEL = SGMWrapper(load_model(pretrained_model_name_or_path="/home/atopaloglu21/stable-virtual-camera/model.safetensors", device="cpu", verbose=True).eval()).to(device)
 AE = AutoEncoder(chunk_size=1).to(device)
@@ -178,13 +180,22 @@ class SevaRenderer(object):
         else:
             # Assume `Advance` demo mode: use dust3r to extract camera parameters and points.
             img_paths = [p for (p, _) in input_img_path_or_tuples]
+            # (
+            #     input_imgs,
+            #     input_Ks,
+            #     input_c2ws,
+            #     points,
+            #     point_colors,
+            # ) = DUST3R.infer_cameras_and_points(img_paths)
+
             (
                 input_imgs,
                 input_Ks,
                 input_c2ws,
                 points,
                 point_colors,
-            ) = DUST3R.infer_cameras_and_points(img_paths)
+            ) = VGGT.infer_cameras_and_points(img_paths)
+            
             num_inputs = len(img_paths)
             if num_inputs == 1:
                 input_imgs, input_Ks, input_c2ws, points, point_colors = (
