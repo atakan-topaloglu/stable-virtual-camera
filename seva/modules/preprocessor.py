@@ -230,7 +230,6 @@ class VggtPipeline(object):
         extrinsic_w2c_np, intrinsic_518_np, depth_map_518_np, depth_conf_518_np = self.run_VGGT(self.model, images_loaded_sq_tensor, self.dtype, self.vggt_fixed_resolution)
         points_3d = self._unproject_depth_map_to_point_map(depth_map_518_np, extrinsic_w2c_np, intrinsic_518_np)
 
-        num_frames, height, width, _ = points_3d.shape
         points_rgb = F.interpolate(
             images_loaded_sq_tensor, size=(self.vggt_fixed_resolution, self.vggt_fixed_resolution), mode="bilinear", align_corners=False
         )
@@ -259,7 +258,7 @@ class VggtPipeline(object):
         s_load_factor_h = first_img_h / self.vggt_fixed_resolution
 
         intrinsic_518_np[:, 0, :] *= s_load_factor_w 
-        intrinsic_518_np[:, 1, 1] = intrinsic_518_np[:, 0, 0]
+        intrinsic_518_np[:, 1, :] *= s_load_factor_h
 
         Ks = intrinsic_518_np
 
