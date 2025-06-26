@@ -44,7 +44,7 @@ except Exception:
 def pad_indices(
     input_indices: List[int],
     test_indices: List[int],
-    T: int,
+    T: int, 
     padding_mode: Literal["first", "last", "none"] = "last",
 ):
     assert padding_mode in ["last", "none"], "`first` padding is not supported yet."
@@ -699,10 +699,7 @@ def chunk_input_and_test(
                 input_is_cond = input_idx in gt_input_inds
                 prefix_inds = [] if input_is_cond else [input_idx]
 
-                if (
-                    len(chunk) == T_second_pass - len(prefix_inds)
-                    or not candidate_input_inds
-                ):
+                if len(chunk) == T_second_pass - len(prefix_inds) or not candidate_input_inds:
                     if chunk:
                         chunk += ["NULL"] * (T_second_pass - len(chunk))
                         chunks.append(chunk)
@@ -965,7 +962,6 @@ def save_output(
     samples,
     save_path,
     video_save_fps=2,
-    img_names: Optional[List[str]] = None,
 ):
     os.makedirs(save_path, exist_ok=True)
     for sample in samples:
@@ -997,12 +993,8 @@ def save_output(
             )
             os.makedirs(os.path.join(save_path, sample_), exist_ok=True)
             for i, s in enumerate(value):
-                if img_names and i < len(img_names):
-                    filename = img_names[i]
-                else:
-                    filename = f"{i:03d}.png"
                 iio.imwrite(
-                    os.path.join(save_path, sample_, filename),
+                    os.path.join(save_path, sample_, f"{i:03d}.png"),
                     s,
                 )
         elif media_type == "video":
@@ -1468,14 +1460,12 @@ def run_one_scene(
 
     # Get Data
     input_indices = image_cond["input_indices"]
-    input_indices_int = image_cond["input_indices_int"]
     input_imgs = imgs[input_indices]
     input_imgs_clip = imgs_clip[input_indices]
     input_c2ws = camera_cond["c2w"][input_indices]
     input_Ks = camera_cond["K"][input_indices]
 
     test_indices = [i for i in range(len(imgs)) if i not in input_indices]
-    test_indices = [i for i in range(len(imgs)) if i not in input_indices_int]
     test_imgs = imgs[test_indices]
     test_imgs_clip = imgs_clip[test_indices]
     test_c2ws = camera_cond["c2w"][test_indices]
@@ -1976,14 +1966,6 @@ def run_one_scene(
         all_samples = {
             key: value[np.argsort(all_test_inds)] for key, value in all_samples.items()
         }
-
-    # Get the original filenames for the test set
-    test_img_paths = [image_cond["img"][i] for i in test_indices]
-    # Filter out None paths which can happen for generated trajectories
-    test_img_names = [os.path.basename(p) for p in test_img_paths if p is not None]
-    if not test_img_names:
-        test_img_names = None  # Pass None if no names are found
-
     save_output(
         replace_or_include_input_for_dict(
             all_samples,
@@ -1996,7 +1978,6 @@ def run_one_scene(
         else all_samples,
         save_path=save_path,
         video_save_fps=options.get("video_save_fps", 2),
-        img_names=test_img_names,
     )
     video_path_1 = os.path.join(save_path, "samples-rgb.mp4")
     yield video_path_1
