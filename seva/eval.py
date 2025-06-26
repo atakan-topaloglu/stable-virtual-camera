@@ -48,9 +48,10 @@ def pad_indices(
     padding_mode: Literal["first", "last", "none"] = "last",
 ):
     assert padding_mode in ["last", "none"], "`first` padding is not supported yet."
+    T_second_pass = T[1] if isinstance(T, (list, tuple)) else T
     if padding_mode == "last":
         padded_indices = [
-            i for i in range(T) if i not in (input_indices + test_indices)
+            i for i in range(T_second_pass) if i not in (input_indices + test_indices)
         ]
     else:
         padded_indices = []
@@ -72,8 +73,8 @@ def pad_indices(
         test_selects = [test_selects[ind] for ind in sorted_inds]
 
     if padding_mode == "last":
-        input_maps = np.array([-1] * T)
-        test_maps = np.array([-1] * T)
+        input_maps = np.array([-1] * T_second_pass)
+        test_maps = np.array([-1] * T_second_pass)
     else:
         input_maps = np.array([-1] * (len(input_indices) + len(test_indices)))
         test_maps = np.array([-1] * (len(input_indices) + len(test_indices)))
@@ -514,6 +515,14 @@ def chunk_input_and_test(
 ):
     M, N = input_c2ws.shape[0], test_c2ws.shape[0]
 
+    print(type(T))
+
+    if isinstance(T, list):
+        T_first_pass, T_second_pass = T
+        print(T_first_pass, T_second_pass)
+    else:
+        T_first_pass = T_second_pass = T
+
     chunks = []
     if chunk_strategy.startswith("gt"):
         assert len(gt_input_inds) < T, (
@@ -690,9 +699,12 @@ def chunk_input_and_test(
                 input_is_cond = input_idx in gt_input_inds
                 prefix_inds = [] if input_is_cond else [input_idx]
 
-                if len(chunk) == T - len(prefix_inds) or not candidate_input_inds:
+                if (
+                    len(chunk) == T_second_pass - len(prefix_inds)
+                    or not candidate_input_inds
+                ):
                     if chunk:
-                        chunk += ["NULL"] * (T - len(chunk))
+                        chunk += ["NULL"] * (T_second_pass - len(chunk))
                         chunks.append(chunk)
                         chunk = input_imgs[gt_input_inds].tolist()
                     if num_test_seen >= N:
@@ -703,7 +715,7 @@ def chunk_input_and_test(
                     input_imgs[prefix_inds].tolist() + test_imgs[test_inds].tolist()
                 )
 
-                space_left = T - len(chunk)
+                space_left = T_second_pass - len(chunk)
                 if len(candidate_chunk) <= space_left:
                     chunk.extend(candidate_chunk)
                     num_test_seen += len(test_inds)
@@ -721,7 +733,7 @@ def chunk_input_and_test(
                     chunk = input_imgs[gt_input_inds].tolist()
 
             if chunk and chunk != input_imgs[gt_input_inds].tolist():
-                chunks.append(chunk + ["NULL"] * (T - len(chunk)))
+                chunks.append(chunk + ["NULL"] * (T_second_pass - len(chunk)))
 
     elif chunk_strategy.startswith("interp"):
         # `interp` chunk requires ordering info
@@ -953,6 +965,7 @@ def save_output(
     samples,
     save_path,
     video_save_fps=2,
+    img_names: Optional[List[str]] = None,
 ):
     os.makedirs(save_path, exist_ok=True)
     for sample in samples:
@@ -984,8 +997,12 @@ def save_output(
             )
             os.makedirs(os.path.join(save_path, sample_), exist_ok=True)
             for i, s in enumerate(value):
+                if img_names and i < len(img_names):
+                    filename = img_names[i]
+                else:
+                    filename = f"{i:03d}.png"
                 iio.imwrite(
-                    os.path.join(save_path, sample_, f"{i:03d}.png"),
+                    os.path.join(save_path, sample_, filename),
                     s,
                 )
         elif media_type == "video":
@@ -1451,12 +1468,14 @@ def run_one_scene(
 
     # Get Data
     input_indices = image_cond["input_indices"]
+    input_indices_int = image_cond["input_indices_int"]
     input_imgs = imgs[input_indices]
     input_imgs_clip = imgs_clip[input_indices]
     input_c2ws = camera_cond["c2w"][input_indices]
     input_Ks = camera_cond["K"][input_indices]
 
     test_indices = [i for i in range(len(imgs)) if i not in input_indices]
+    test_indices = [i for i in range(len(imgs)) if i not in input_indices_int]
     test_imgs = imgs[test_indices]
     test_imgs_clip = imgs_clip[test_indices]
     test_c2ws = camera_cond["c2w"][test_indices]
@@ -1957,6 +1976,14 @@ def run_one_scene(
         all_samples = {
             key: value[np.argsort(all_test_inds)] for key, value in all_samples.items()
         }
+
+    # Get the original filenames for the test set
+    test_img_paths = [image_cond["img"][i] for i in test_indices]
+    # Filter out None paths which can happen for generated trajectories
+    test_img_names = [os.path.basename(p) for p in test_img_paths if p is not None]
+    if not test_img_names:
+        test_img_names = None  # Pass None if no names are found
+
     save_output(
         replace_or_include_input_for_dict(
             all_samples,
@@ -1969,6 +1996,7 @@ def run_one_scene(
         else all_samples,
         save_path=save_path,
         video_save_fps=options.get("video_save_fps", 2),
+        img_names=test_img_names,
     )
     video_path_1 = os.path.join(save_path, "samples-rgb.mp4")
     yield video_path_1

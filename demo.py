@@ -128,6 +128,8 @@ def parse_task(
         camera_ids = parser.camera_ids
         Ks = np.concatenate([parser.Ks_dict[cam_id][None] for cam_id in camera_ids], 0)
 
+        input_indices_int = [] 
+
         if num_inputs is None:
             assert len(parser.splits_per_num_input_frames.keys()) == 1
             num_inputs = list(parser.splits_per_num_input_frames.keys())[0]
@@ -143,16 +145,15 @@ def parse_task(
         if task == "img2img":
             # Note in this setting, we should refrain from using all the other camera
             # info except ones from sampled_indices, and most importantly, the order.
+
+            sampled_indices = np.sort(np.array(split_dict["train_ids"] + split_dict["test_ids"]))
+            input_indices_int = [i for i, s_idx in enumerate(sampled_indices) if s_idx in split_dict["train_ids"]]
             num_anchors = infer_prior_stats(
                 T,
                 num_inputs,
                 num_total_frames=num_targets,
                 version_dict=version_dict,
             )
-
-            sampled_indices = np.sort(
-                np.array(split_dict["train_ids"] + split_dict["test_ids"])
-            )  # we always sort all indices first
 
             traj_prior = options.get("traj_prior", None)
             if traj_prior == "spiral":
@@ -207,6 +208,8 @@ def parse_task(
                 sampled_indices.shape[0],
                 sampled_indices.shape[0] + num_anchors,
             ).tolist()  # the order has no meaning here
+            
+            input_indices_int = input_indices
 
         elif task == "img2vid":
             num_targets = len(all_imgs_path) - num_inputs
@@ -217,7 +220,8 @@ def parse_task(
                 version_dict=version_dict,
             )
 
-            input_indices = split_dict["train_ids"]
+            input_indices_int = input_indices
+
             anchor_indices = infer_prior_inds(
                 c2ws,
                 num_prior_frames=num_anchors,
@@ -250,10 +254,12 @@ def parse_task(
             c2ws = c2ws[sampled_indices]
             Ks = Ks[sampled_indices]
 
-            input_indices = np.arange(num_inputs).tolist()
+            input_indices_int = input_indices
             anchor_indices = np.linspace(
                 num_inputs, num_inputs + num_targets - 1, num_anchors
             ).tolist()
+
+            input_indices_int = input_indices
 
         else:
             raise ValueError(f"Unknown task: {task}")
@@ -263,6 +269,7 @@ def parse_task(
         num_inputs,
         num_targets,
         input_indices,
+        input_indices_int,
         anchor_indices,
         torch.tensor(c2ws[:, :3]).float(),
         torch.tensor(Ks).float(),
@@ -295,7 +302,7 @@ def main(
     options["beta_linear_start"] = 5e-6
     options["log_snr_shift"] = 2.4
     options["guider_types"] = 1
-    options["cfg"] = 2.0
+    options["cfg"] = 3.0
     options["camera_scale"] = 2.0
     options["num_steps"] = 50
     options["cfg_min"] = 1.2
@@ -331,6 +338,7 @@ def main(
             num_inputs,
             num_targets,
             input_indices,
+            input_indices_int,
             anchor_indices,
             c2ws,
             Ks,
@@ -348,6 +356,7 @@ def main(
         image_cond = {
             "img": all_imgs_path,
             "input_indices": input_indices,
+            "input_indices_int": input_indices_int,
             "prior_indices": anchor_indices,
         }
         # Create camera conditioning.
@@ -377,24 +386,25 @@ def main(
 
         # Convert from OpenCV to OpenGL camera format.
         c2ws = c2ws @ torch.tensor(np.diag([1, -1, -1, 1])).float()
-        img_paths = sorted(glob.glob(osp.join(save_path_scene, "samples-rgb", "*.png")))
-        if len(img_paths) != len(c2ws):
-            input_img_paths = sorted(
-                glob.glob(osp.join(save_path_scene, "input", "*.png"))
-            )
-            assert len(img_paths) == num_targets
-            assert len(input_img_paths) == num_inputs
-            assert c2ws.shape[0] == num_inputs + num_targets
-            target_indices = [i for i in range(c2ws.shape[0]) if i not in input_indices]
-            img_paths = [
-                input_img_paths[input_indices.index(i)]
-                if i in input_indices
-                else img_paths[target_indices.index(i)]
-                for i in range(c2ws.shape[0])
-            ]
+
+        final_img_paths = [None] * len(all_imgs_path)
+        
+        saved_input_paths = sorted(glob.glob(osp.join(save_path_scene, "input", "image", "*.png")))
+        for i, idx in enumerate(input_indices_int):
+            final_img_paths[idx] = saved_input_paths[i]
+
+        # 2. Get paths for generated test/output images.
+        test_indices_in_subset = [i for i in range(len(all_imgs_path)) if i not in input_indices_int]
+        for i, idx in enumerate(test_indices_in_subset):
+            original_filename = os.path.basename(all_imgs_path[idx])
+            final_img_paths[idx] = osp.join(save_path_scene, "samples-rgb", original_filename)
+
+        assert all(p is not None for p in final_img_paths), "Failed to reconstruct all image paths."
+
+
         create_transforms_simple(
             save_path=save_path_scene,
-            img_paths=img_paths,
+            img_paths=final_img_paths,
             img_whs=np.array([VERSION_DICT["W"], VERSION_DICT["H"]])[None].repeat(
                 num_inputs + num_targets, 0
             ),

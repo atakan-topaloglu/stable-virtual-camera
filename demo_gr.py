@@ -3,16 +3,13 @@ import json
 import os
 import os.path as osp
 import queue
-import secrets
 import threading
 import time
 from datetime import datetime
-from glob import glob
 from pathlib import Path
 from typing import Literal
 
 import gradio as gr
-import httpx
 import imageio.v3 as iio
 import numpy as np
 import torch
@@ -21,9 +18,7 @@ import tyro
 import viser
 import viser.transforms as vt
 from einops import rearrange
-from gradio import networking
 from gradio.context import LocalContext
-from gradio.tunneling import CERTIFICATE_PATH, Tunnel
 
 from seva.eval import (
     IS_TORCH_NIGHTLY,
@@ -43,7 +38,7 @@ from seva.gui import define_gui
 from seva.model import SGMWrapper
 from seva.modules.autoencoder import AutoEncoder
 from seva.modules.conditioner import CLIPConditioner
-from seva.modules.preprocessor import Dust3rPipeline, VggtPipeline
+from seva.modules.preprocessor import Dust3rPipeline, VggtPipeline, ColmapPipeline
 from seva.sampling import DDPMDiscretization, DiscreteDenoiser
 from seva.utils import load_model
 
@@ -108,6 +103,7 @@ else:
 # Shared global variables across sessions.
 DUST3R = Dust3rPipeline(device=device)  # type: ignore
 VGGT = VggtPipeline(device=device)
+COLMAP = ColmapPipeline()
 MODEL = SGMWrapper(load_model(device="cpu", verbose=True).eval()).to(device)
 # MODEL = SGMWrapper(load_model(pretrained_model_name_or_path="/home/atopaloglu21/stable-virtual-camera/model.safetensors", device="cpu", verbose=True).eval()).to(device)
 AE = AutoEncoder(chunk_size=1).to(device)
@@ -189,14 +185,24 @@ class SevaRenderer(object):
             # ) = DUST3R.infer_cameras_and_points(img_paths)
 
             (
+                input_imgs1,
+                input_Ks1,
+                input_c2ws1,
+                points1,
+                point_colors1,
+            ) = VGGT.infer_cameras_and_points(img_paths)
+
+            (
                 input_imgs,
                 input_Ks,
                 input_c2ws,
                 points,
                 point_colors,
-            ) = VGGT.infer_cameras_and_points(img_paths)
-            
-            num_inputs = len(img_paths)
+            ) = COLMAP.infer_cameras_and_points(
+                colmap_project_dir="/home/atopaloglu21/nerf_360_data/bicycle"
+            )
+
+            num_inputs = len(input_imgs)
             if num_inputs == 1:
                 input_imgs, input_Ks, input_c2ws, points, point_colors = (
                     input_imgs[:1],
@@ -498,6 +504,7 @@ class SevaRenderer(object):
         num_frames: int | None,
         zoom_factor: float | None,
         camera_scale: float,
+        diffusion_steps: int,
     ):
         render_name = datetime.now().strftime("%Y%m%d_%H%M%S")
         render_dir = osp.join(WORK_DIR, render_name)
@@ -562,7 +569,7 @@ class SevaRenderer(object):
             "input_indices": list(range(num_inputs + num_targets)),
         }
         # Run rendering.
-        num_steps = 50
+        num_steps = diffusion_steps
         options_ori = VERSION_DICT["options"]
         options = copy.deepcopy(options_ori)
         options["chunk_strategy"] = chunk_strategy
@@ -748,6 +755,11 @@ def set_bkgd_color(server: viser.ViserServer | viser.ClientHandle):
 
 
 def start_server_and_abort_event(request: gr.Request):
+    # Problem 1 Fix: The Viser server was being created on a random port,
+    # but the iframe was hardcoded to port 8081. This caused the viewer
+    # to not load, making the scene non-interactive.
+    # The fix is to dynamically get the port from the Viser server and use it
+    # to construct the iframe URL.
     server = viser.ViserServer()
 
     @server.on_client_connect
@@ -760,27 +772,15 @@ def start_server_and_abort_event(request: gr.Request):
         )
         set_bkgd_color(client)
 
-    print(f"Starting server {server.get_port()}")
-    remote_viser_port = server.get_port()
-    print(f"Starting Viser server on remote port: {remote_viser_port}")
-    iframe_viser_url = "http://localhost:8081" 
+    port = server.get_port()
+    print(f"Starting Viser server on port: {port}")
+    iframe_viser_url = f"http://127.0.0.1:{port}"
 
-    SERVERS[request.session_hash] = (server, None) # Store server, no tunnel object
-
-    # server_url, tunnel = setup_tunnel(
-    #     local_host=server.get_host(),
-    #     local_port=server.get_port(),
-    #     share_token=secrets.token_urlsafe(32),
-    #     share_server_address=None,
-    # )
-    time.sleep(1)
-    # if server_url is None:
-    #     raise gr.Error(
-    #         "Failed to get a viewport URL. Please check your network connection."
-    #     )
-    # # Give it enough time to start.
-
+    SERVERS[request.session_hash] = (server, None)
     ABORT_EVENTS[request.session_hash] = threading.Event()
+
+    # Give server a moment to start before the iframe tries to connect.
+    time.sleep(1)
 
     return (
         SevaRenderer(server),
@@ -795,10 +795,12 @@ def start_server_and_abort_event(request: gr.Request):
 def stop_server_and_abort_event(request: gr.Request):
     if request.session_hash in SERVERS:
         print(f"Stopping server for session {request.session_hash}")
-        server, tunnel_obj = SERVERS.pop(request.session_hash) # tunnel_obj will be None
+        server, tunnel_obj = SERVERS.pop(
+            request.session_hash
+        )  # tunnel_obj will be None
         if server:
             server.stop()
-        if tunnel_obj: # This check is good practice, though tunnel_obj is None now
+        if tunnel_obj:  # This check is good practice, though tunnel_obj is None now
             tunnel_obj.kill()
 
     if request.session_hash in ABORT_EVENTS:
@@ -872,10 +874,12 @@ def main(server_port: int | None = None, share: bool = True):
                     with gr.Column():
                         with gr.Group():
                             # Initially disable the Preprocess Images button until an image is selected.
-                            preprocess_btn = gr.Button("Preprocess images", interactive=False)
+                            preprocess_btn = gr.Button(
+                                "Preprocess images", interactive=True
+                            )
                             preprocess_progress = gr.Textbox(
                                 label="",
-                                visible=False,
+                                visible=True,
                                 interactive=False,
                             )
                         with gr.Group():
@@ -949,6 +953,14 @@ def main(server_port: int | None = None, share: bool = True):
                             seed = gr.Number(value=23, label="Random seed")
                             chunk_strategy.render()
                             cfg = gr.Slider(1.0, 7.0, value=4.0, label="CFG value")
+                        with gr.Row():
+                            diffusion_steps = gr.Slider(
+                                minimum=10,
+                                maximum=100,
+                                value=50,
+                                step=1,
+                                label="Diffusion steps",
+                            )
                         with gr.Row():
                             camera_scale = gr.Slider(
                                 0.1,
@@ -1041,6 +1053,7 @@ def main(server_port: int | None = None, share: bool = True):
                                 num_frames,
                                 zoom_factor,
                                 camera_scale,
+                                diffusion_steps,
                             ],
                             outputs=[
                                 output_video,
@@ -1078,7 +1091,9 @@ def main(server_port: int | None = None, share: bool = True):
                     with gr.Column():
                         with gr.Group():
                             # Initially disable the Preprocess Images button until images are selected.
-                            preprocess_btn = gr.Button("Preprocess images", interactive=False)
+                            preprocess_btn = gr.Button(
+                                "Preprocess images", interactive=True
+                            )
                             preprocess_progress = gr.Textbox(
                                 label="",
                                 visible=False,
@@ -1139,7 +1154,7 @@ def main(server_port: int | None = None, share: bool = True):
                                     gr.update(visible=False),
                                     gr.update(visible=False),
                                     gr.update(visible=True),
-                                    gr.update(interactive=bool(x))
+                                    gr.update(interactive=bool(x)),
                                 ),
                                 inputs=[example_imgs_expander],
                                 outputs=[
@@ -1148,7 +1163,7 @@ def main(server_port: int | None = None, share: bool = True):
                                     example_imgs_confirmer,
                                     example_imgs_backer,
                                     example_imgs,
-                                    preprocess_btn
+                                    preprocess_btn,
                                 ],
                             )
                             example_imgs_backer.click(
@@ -1196,6 +1211,14 @@ def main(server_port: int | None = None, share: bool = True):
                             chunk_strategy.render()
                             cfg = gr.Slider(1.0, 7.0, value=3.0, label="CFG value")
                         with gr.Row():
+                            diffusion_steps = gr.Slider(
+                                minimum=10,
+                                maximum=100,
+                                value=50,
+                                step=1,
+                                label="Diffusion steps",
+                            )
+                        with gr.Row():
                             camera_scale = gr.Slider(
                                 0.1,
                                 15.0,
@@ -1232,6 +1255,7 @@ def main(server_port: int | None = None, share: bool = True):
                                 gr.State(),
                                 gr.State(),
                                 camera_scale,
+                                diffusion_steps,
                             ],
                             outputs=[
                                 output_video,
@@ -1271,5 +1295,5 @@ def main(server_port: int | None = None, share: bool = True):
 
 
 if __name__ == "__main__":
-    Path(WORK_DIR).mkdir(parents=True, exist_ok=True)   
+    Path(WORK_DIR).mkdir(parents=True, exist_ok=True)
     tyro.cli(main)
